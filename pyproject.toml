@@ -1,0 +1,32 @@
+[project]
+name = "ttrpg-listen"
+version = "0.1.0"
+description = "Local AI-powered live transcription for TTRPG sessions"
+requires-python = ">=3.11"
+dependencies = [
+    "sounddevice>=0.4",
+    "numpy>=1.24",
+    "rich>=13.0",
+    "pyyaml>=6.0",
+    "torch>=2.0",
+    "torchaudio>=2.0",
+    "transformers>=4.51",
+    "silero-vad>=5.0",
+]
+
+[project.optional-dependencies]
+diarization = ["pyannote-audio>=3.1"]
+dev = ["ruff", "pytest"]
+
+[project.scripts]
+ttrpglisten = "ttrpglisten.cli:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
