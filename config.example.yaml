@@ -18,9 +18,10 @@ streaming:
   language: "en"
 
 postprocess:
-  # Model for final transcript (larger = better quality)
-  model: "usefulsensors/moonshine-streaming-medium"
-  diarization: true
+  # Model for final transcript (Whisper large-v3-turbo for best quality)
+  # Alternatives: usefulsensors/moonshine-streaming-medium (faster, lighter)
+  model: "openai/whisper-large-v3-turbo"
+  diarization: true       # Requires: pip install pyannote-audio + HF_TOKEN env var
   min_speakers: 2
   max_speakers: 8
 

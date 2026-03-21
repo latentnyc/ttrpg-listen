@@ -26,7 +26,7 @@ class StreamingConfig:
 
 @dataclass
 class PostprocessConfig:
-    model: str = "usefulsensors/moonshine-streaming-medium"
+    model: str = "openai/whisper-large-v3-turbo"
     diarization: bool = True
     min_speakers: int = 2
     max_speakers: int = 8
@@ -58,15 +58,15 @@ class Config:
 PRESETS = {
     "low": {
         "streaming": {"model": "usefulsensors/moonshine-streaming-tiny"},
-        "postprocess": {"model": "usefulsensors/moonshine-streaming-small", "diarization": False},
+        "postprocess": {"model": "usefulsensors/moonshine-streaming-medium", "diarization": False},
     },
     "medium": {
         "streaming": {"model": "usefulsensors/moonshine-streaming-small"},
-        "postprocess": {"model": "usefulsensors/moonshine-streaming-medium", "diarization": True},
+        "postprocess": {"model": "openai/whisper-large-v3-turbo", "diarization": True},
     },
     "high": {
         "streaming": {"model": "usefulsensors/moonshine-streaming-medium"},
-        "postprocess": {"model": "usefulsensors/moonshine-streaming-medium", "diarization": True},
+        "postprocess": {"model": "openai/whisper-large-v3-turbo", "diarization": True},
     },
 }
 

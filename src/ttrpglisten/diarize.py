@@ -11,6 +11,9 @@ import numpy as np
 def diarize_wav(wav_path: Path, min_speakers: int = 2, max_speakers: int = 8) -> list[dict]:
     """Run speaker diarization on a WAV file.
 
+    Requires pyannote-audio and a HuggingFace token (set HF_TOKEN env var).
+    Accept model terms at: https://huggingface.co/pyannote/speaker-diarization-3.1
+
     Returns a list of segments: [{"start": float, "end": float, "speaker": str}, ...]
     """
     try:
@@ -20,7 +23,23 @@ def diarize_wav(wav_path: Path, min_speakers: int = 2, max_speakers: int = 8) ->
         print("  Install with: pip install pyannote-audio")
         return []
 
-    pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
+    import os
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token:
+        print("[warning] HF_TOKEN not set. Speaker diarization requires a HuggingFace token.")
+        print("  1. Create token at: https://huggingface.co/settings/tokens")
+        print("  2. Accept terms at: https://huggingface.co/pyannote/speaker-diarization-3.1")
+        print("  3. Set: export HF_TOKEN=your_token_here")
+        return []
+
+    try:
+        pipeline = Pipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            use_auth_token=hf_token,
+        )
+    except Exception as e:
+        print(f"[warning] Could not load diarization model: {e}")
+        return []
 
     diarization = pipeline(
         str(wav_path),
