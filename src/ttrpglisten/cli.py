@@ -172,10 +172,9 @@ def main():
         console.print("  [yellow]No loopback device found (system audio not captured)[/yellow]")
         console.print("  [dim]Install pyaudiowpatch for WASAPI loopback: pip install pyaudiowpatch[/dim]")
 
-    if capture.mic_id is not None:
-        devs = list_devices()
-        name = next((d["name"] for d in devs if d["index"] == capture.mic_id), "?")
-        console.print(f"  Mic: [cyan]{name}[/cyan] (device {capture.mic_id})")
+    mic_name = capture.mic_name
+    if mic_name:
+        console.print(f"  Mic: [cyan]{mic_name}[/cyan]")
     else:
         console.print("  [yellow]No mic device (your voice not captured)[/yellow]")
 

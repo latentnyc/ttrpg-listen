@@ -40,10 +40,10 @@ class OutputConfig:
 @dataclass
 class VadConfig:
     threshold: float = 0.5
-    min_silence_duration_ms: int = 600
-    speech_pad_ms: int = 200
+    min_silence_duration_ms: int = 400
+    speech_pad_ms: int = 150
     min_speech_duration_ms: int = 250
-    max_speech_duration_s: float = 10.0
+    max_speech_duration_s: float = 5.0
 
 
 @dataclass
