@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from .config import Config, resolve_device
+from .diarize import align_transcript_with_speakers, diarize_wav
 from .transcribe import TranscriptionEngine
 
 
@@ -94,27 +95,51 @@ def postprocess(
 
         progress.update(task3, description="Transcription complete", completed=True)
 
+        # Speaker diarization (optional)
+        speaker_segments = []
+        if config.postprocess.diarization:
+            task4 = progress.add_task("Running speaker diarization...", total=None)
+            speaker_segments = diarize_wav(
+                wav_path,
+                min_speakers=config.postprocess.min_speakers,
+                max_speakers=config.postprocess.max_speakers,
+            )
+            if speaker_segments:
+                progress.update(task4, description=f"Diarization complete ({len(set(s['speaker'] for s in speaker_segments))} speakers)", completed=True)
+            else:
+                progress.update(task4, description="Diarization skipped", completed=True)
+
+    # Align transcript with speakers
+    if speaker_segments:
+        aligned = align_transcript_with_speakers(segments, speaker_segments)
+    else:
+        aligned = [(t, text, None) for t, text in segments]
+
     # Write output
     duration_s = len(full_audio) / sample_rate
     duration_m = int(duration_s // 60)
     duration_h = int(duration_m // 60)
     duration_m = duration_m % 60
 
+    # Collect unique speakers
+    speakers = sorted(set(s for _, _, s in aligned if s))
+
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(f"Session: {session_start.strftime('%Y-%m-%d %H:%M')}\n")
         f.write(f"Duration: {duration_h}h {duration_m}m\n")
         f.write(f"Model: {config.postprocess.model}\n")
+        if speakers:
+            f.write(f"Speakers: {', '.join(speakers)}\n")
         f.write("\n---\n\n")
 
-        for time_offset, text in segments:
+        for time_offset, text, speaker in aligned:
             minutes = int(time_offset // 60)
             seconds = int(time_offset % 60)
-            session_time = session_start.replace(
-                minute=session_start.minute + minutes,
-                second=seconds,
-            )
             ts = f"{int(time_offset // 3600):02d}:{minutes % 60:02d}:{seconds:02d}"
-            f.write(f"[{ts}] {text}\n\n")
+            if speaker:
+                f.write(f"[{ts}] {speaker}: {text}\n\n")
+            else:
+                f.write(f"[{ts}] {text}\n\n")
 
     console.print(f"\n[bold green]Transcript saved to:[/bold green] {output_path}")
     return output_path
