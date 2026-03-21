@@ -47,7 +47,7 @@ class VadChunker:
         self._vad_model = load_silero_vad()
 
     def _get_speech_prob(self, audio_chunk: np.ndarray) -> float:
-        """Get speech probability for a 30ms audio chunk."""
+        """Get speech probability for a 32ms audio chunk (512 samples at 16kHz)."""
         tensor = torch.from_numpy(audio_chunk).float()
         return self._vad_model(tensor, self.sample_rate).item()
 
@@ -58,7 +58,8 @@ class VadChunker:
         buffer = np.zeros(0, dtype=np.float32)
         speech_start = -1  # -1 means not in speech
         silence_counter = 0
-        vad_frame_size = int(self.sample_rate * 0.03)  # 30ms frames for Silero
+        # Silero VAD requires exactly 512 samples at 16kHz (32ms)
+        vad_frame_size = 512 if self.sample_rate == 16000 else 256
 
         while not self._stop_event.is_set():
             try:
@@ -68,7 +69,7 @@ class VadChunker:
 
             buffer = np.concatenate([buffer, chunk])
 
-            # Process in 30ms VAD frames
+            # Process in 32ms VAD frames (512 samples at 16kHz)
             while len(buffer) >= vad_frame_size:
                 frame = buffer[:vad_frame_size]
                 buffer = buffer[vad_frame_size:]

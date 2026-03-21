@@ -10,6 +10,8 @@ from queue import Queue
 
 import numpy as np
 import sounddevice as sd
+from scipy.signal import resample_poly
+from math import gcd
 
 from .config import AudioConfig
 
@@ -31,21 +33,78 @@ def list_devices() -> list[dict]:
 
 
 def find_loopback_device() -> int | None:
-    """Auto-detect a WASAPI loopback device on Windows."""
+    """Auto-detect a system audio capture device on Windows.
+
+    Checks, in priority order:
+      1. WASAPI devices with 'loopback' in the name
+      2. 'Stereo mix' / 'what u hear' on reliable host APIs (MME, DirectSound, WASAPI)
+      3. 'Stereo mix' / 'what u hear' on any host API (WDM-KS as last resort)
+    Validates each candidate can actually be opened before returning it.
+    """
+    candidates = []
     devices = sd.query_devices()
+    preferred_apis = {"MME", "Windows DirectSound", "Windows WASAPI"}
+
+    # Priority 1: WASAPI loopback
     for i, dev in enumerate(devices):
+        if dev["max_input_channels"] <= 0:
+            continue
         hostapi = sd.query_hostapis(dev["hostapi"])["name"]
-        if "WASAPI" in hostapi and dev["max_input_channels"] > 0:
-            name_lower = dev["name"].lower()
-            if "loopback" in name_lower:
-                return i
-    # Fallback: look for any stereo mix or similar
+        name_lower = dev["name"].lower()
+        if "WASAPI" in hostapi and "loopback" in name_lower:
+            candidates.append(i)
+
+    # Priority 2: Stereo Mix / What U Hear on preferred host APIs
     for i, dev in enumerate(devices):
-        if dev["max_input_channels"] > 0:
-            name_lower = dev["name"].lower()
-            if "stereo mix" in name_lower or "what u hear" in name_lower:
-                return i
+        if dev["max_input_channels"] <= 0 or i in candidates:
+            continue
+        hostapi = sd.query_hostapis(dev["hostapi"])["name"]
+        name_lower = dev["name"].lower()
+        if ("stereo mix" in name_lower or "what u hear" in name_lower) and hostapi in preferred_apis:
+            candidates.append(i)
+
+    # Priority 3: Stereo Mix / What U Hear on any host API
+    for i, dev in enumerate(devices):
+        if dev["max_input_channels"] <= 0 or i in candidates:
+            continue
+        name_lower = dev["name"].lower()
+        if "stereo mix" in name_lower or "what u hear" in name_lower:
+            candidates.append(i)
+
+    # Validate candidates by attempting to actually open and start them
+    for dev_id in candidates:
+        if _can_open_input(dev_id):
+            return dev_id
+
     return None
+
+
+def _can_open_input(device_id: int) -> bool:
+    """Test whether a device can actually capture audio (opens, starts, delivers samples)."""
+    import time
+
+    dev = sd.query_devices(device_id)
+    got_audio = []
+
+    def test_cb(indata, frames, time_info, status):
+        got_audio.append(True)
+
+    try:
+        stream = sd.InputStream(
+            device=device_id,
+            samplerate=dev["default_samplerate"],
+            channels=1,
+            dtype="float32",
+            blocksize=1024,
+            callback=test_cb,
+        )
+        stream.start()
+        time.sleep(0.3)  # give it a moment to deliver samples
+        stream.stop()
+        stream.close()
+        return len(got_audio) > 0
+    except (sd.PortAudioError, Exception):
+        return False
 
 
 def find_default_mic() -> int | None:
@@ -118,13 +177,24 @@ class DualAudioCapture:
         with self._wav_lock:
             self._wav_file.writeframes(stereo.tobytes())
 
-    def _make_callback(self, source: str):
+    def _make_callback(self, source: str, native_rate: int):
         """Create a sounddevice callback for a given source."""
+        # Pre-compute resampling ratio
+        need_resample = native_rate != self.sample_rate
+        if need_resample:
+            g = gcd(native_rate, self.sample_rate)
+            up = self.sample_rate // g
+            down = native_rate // g
+
         def callback(indata, frames, time_info, status):
             if self._stop_event.is_set():
                 return
             # Convert to mono float32
             audio = indata[:, 0].copy() if indata.shape[1] > 1 else indata.flatten().copy()
+
+            # Resample to target rate if needed
+            if need_resample:
+                audio = resample_poly(audio, up, down).astype(np.float32)
 
             with self._buffer_lock:
                 if source == "loopback":
@@ -176,13 +246,14 @@ class DualAudioCapture:
 
         if self.loopback_id is not None:
             try:
+                native_rate = int(sd.query_devices(self.loopback_id)["default_samplerate"])
                 stream = sd.InputStream(
                     device=self.loopback_id,
-                    samplerate=self.sample_rate,
+                    samplerate=native_rate,
                     channels=1,
                     dtype="float32",
-                    blocksize=int(self.sample_rate * 0.03),  # 30ms blocks
-                    callback=self._make_callback("loopback"),
+                    blocksize=int(native_rate * 0.03),  # 30ms blocks
+                    callback=self._make_callback("loopback", native_rate),
                 )
                 stream.start()
                 self._streams.append(stream)
@@ -192,13 +263,14 @@ class DualAudioCapture:
 
         if self.mic_id is not None:
             try:
+                native_rate = int(sd.query_devices(self.mic_id)["default_samplerate"])
                 stream = sd.InputStream(
                     device=self.mic_id,
-                    samplerate=self.sample_rate,
+                    samplerate=native_rate,
                     channels=1,
                     dtype="float32",
-                    blocksize=int(self.sample_rate * 0.03),
-                    callback=self._make_callback("mic"),
+                    blocksize=int(native_rate * 0.03),
+                    callback=self._make_callback("mic", native_rate),
                 )
                 stream.start()
                 self._streams.append(stream)

@@ -170,7 +170,11 @@ def main():
         name = next((d["name"] for d in devs if d["index"] == capture.loopback_id), "?")
         console.print(f"  Loopback: [cyan]{name}[/cyan] (device {capture.loopback_id})")
     else:
-        console.print("  [yellow]No loopback device (system audio not captured)[/yellow]")
+        console.print("  [yellow]No loopback device found (system audio not captured)[/yellow]")
+        console.print("  [dim]To capture remote players' audio, try one of:[/dim]")
+        console.print("  [dim]  1. Enable Stereo Mix: Sound Settings > Recording > Show Disabled Devices > Enable 'Stereo Mix'[/dim]")
+        console.print("  [dim]  2. Install VB-Cable (free virtual audio cable) and route game audio through it[/dim]")
+        console.print("  [dim]  3. Specify a device manually: --loopback-device ID (see --list-devices)[/dim]")
 
     if capture.mic_id is not None:
         devs = list_devices()
