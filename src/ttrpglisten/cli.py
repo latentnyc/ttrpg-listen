@@ -17,7 +17,6 @@ from .config import Config, load_config, resolve_device
 from .display import TranscriptDisplay
 from .pipeline import StreamingPipeline
 from .transcribe import TranscriptionEngine
-from .vad import VadChunker
 
 
 def print_devices():
@@ -114,8 +113,7 @@ def main():
     wav_path = Path(cfg.output.directory) / f"session_{session_start.strftime('%Y-%m-%d_%H%M')}.wav"
 
     # Queues connecting the pipeline stages
-    audio_queue: Queue = Queue(maxsize=100)   # raw audio chunks
-    speech_queue: Queue = Queue(maxsize=50)   # VAD-segmented speech
+    audio_queue: Queue = Queue(maxsize=200)   # raw audio chunks (100ms each)
     text_queue: Queue = Queue(maxsize=50)     # transcribed text
 
     # Initialize components
@@ -125,16 +123,7 @@ def main():
     console.print(f"[green]Model loaded:[/green] {cfg.streaming.model}")
 
     capture = DualAudioCapture(audio_queue, cfg.audio, wav_path=wav_path)
-    vad = VadChunker(
-        audio_queue, speech_queue,
-        sample_rate=cfg.audio.sample_rate,
-        threshold=cfg.vad.threshold,
-        min_silence_duration_ms=cfg.vad.min_silence_duration_ms,
-        speech_pad_ms=cfg.vad.speech_pad_ms,
-        min_speech_duration_ms=cfg.vad.min_speech_duration_ms,
-        max_speech_duration_s=cfg.vad.max_speech_duration_s,
-    )
-    pipeline = StreamingPipeline(engine, speech_queue, text_queue, cfg.audio.sample_rate)
+    pipeline = StreamingPipeline(engine, audio_queue, text_queue, cfg.audio.sample_rate)
     display = TranscriptDisplay(text_queue)
 
     # Shutdown handler
@@ -146,7 +135,6 @@ def main():
         if shutdown_count == 1:
             console.print("\n[yellow]Stopping capture... (Ctrl+C again to skip post-processing)[/yellow]")
             capture.stop()
-            vad.stop()
             pipeline.stop()
             display.stop()
         elif shutdown_count >= 2:
@@ -180,7 +168,6 @@ def main():
 
     console.print()
 
-    vad.start()
     pipeline.start()
     display.start()
 
