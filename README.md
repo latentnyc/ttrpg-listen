@@ -6,15 +6,15 @@ Built for players who need live captions or want a searchable record of their se
 
 ## What it does
 
-- **Live captions** in your terminal as people speak (~100ms latency with Moonshine streaming models)
-- **Dual audio capture** -- records both system audio (other players) and your microphone simultaneously
+- **True streaming captions** -- text appears word-by-word as people speak (~300ms updates via sherpa-onnx)
+- **Dual audio capture** -- WASAPI loopback (system audio from any output device including Bluetooth) + your microphone
 - **Post-session transcript** -- after you stop, re-processes the full recording with a larger model for higher accuracy
 - **Speaker diarization** (optional) -- labels who said what in the final transcript using pyannote-audio
-- **Hardware flexible** -- auto-detects CUDA, Metal, or falls back to CPU
+- **Lightweight** -- the streaming recognizer uses only ~5ms of CPU per 100ms of audio (20x faster than real-time)
 
 ## Quick start
 
-**Requirements:** Python 3.11+, a microphone, and system audio output (speakers or headphones)
+**Requirements:** Python 3.11+, Windows (WASAPI loopback), a microphone
 
 ```bash
 # Clone and install
@@ -22,18 +22,20 @@ git clone https://github.com/latentnyc/ttrpg-listen.git
 cd ttrpg-listen
 pip install -e .
 
-# For CUDA (NVIDIA GPU) -- install the CUDA PyTorch build
+# For CUDA (NVIDIA GPU) -- only needed for post-session quality pass
 pip install --force-reinstall torch torchaudio --index-url https://download.pytorch.org/whl/cu128
 
 # For speaker diarization (optional, pulls in ~2GB of models)
 pip install -e ".[diarization]"
 ```
 
+On first run, the streaming model (~30MB) downloads automatically.
+
 ```bash
-# List your audio devices to find the right IDs
+# List your audio devices
 ttrpglisten --list-devices
 
-# Start transcribing (auto-detects loopback + mic)
+# Start transcribing (auto-detects system audio loopback + mic)
 ttrpglisten
 
 # Or specify devices explicitly
@@ -45,48 +47,26 @@ Press **Ctrl+C** to stop. The tool will then run a quality pass over the full re
 ## How it works
 
 ```
-System Audio (loopback) ──┐
-                          ├── mix ──> Silero VAD ──> Moonshine ASR ──> Live Terminal
-Microphone ───────────────┘                                              Display
+System Audio (WASAPI loopback) ──┐
+                                 ├── normalize + mix ──> sherpa-onnx ──> Live Terminal
+Microphone ──────────────────────┘     (frame-by-frame     (streaming     Display
+         │                              RMS balancing)      zipformer)   (word-by-word)
          │
-         └── WAV recording ──> (on Ctrl+C) ──> Larger Model + Diarization ──> Transcript File
+         └── WAV recording ──> (on Ctrl+C) ──> Moonshine + Diarization ──> Transcript File
 ```
 
-**Pass 1 (live):** A small Moonshine streaming model transcribes speech in real-time as you play. Both audio sources are mixed for transcription and recorded to a stereo WAV (left = system audio, right = mic).
+**Live stream:** Audio from both sources is normalized to equal volume and mixed. sherpa-onnx processes audio frame-by-frame with a streaming zipformer transducer model -- text appears as words are recognized, not after sentences finish. Endpoint detection automatically separates utterances when speakers pause.
 
-**Pass 2 (post-session):** A larger model re-transcribes the full recording for better accuracy. If diarization is enabled, pyannote-audio identifies individual speakers and labels the transcript.
+**Post-session:** A larger Moonshine model re-transcribes the full WAV recording for better accuracy. If diarization is enabled, pyannote-audio identifies individual speakers. The stereo WAV (left=system audio, right=mic) helps distinguish your voice from remote players.
 
-## Configuration
+## Audio capture
 
-Copy `config.example.yaml` to `config.yaml` to customize:
+The tool captures two audio sources simultaneously:
 
-```yaml
-audio:
-  loopback_device: null   # null = auto-detect
-  mic_device: null
-  sample_rate: 16000
+- **System loopback** via [pyaudiowpatch](https://github.com/s0d3s/PyAudioWPatch) -- captures from whatever output device Windows is using (speakers, Bluetooth headphones, USB audio, HDMI). This is how you hear remote players.
+- **Microphone** via [sounddevice](https://python-sounddevice.readthedocs.io/) -- captures your voice.
 
-streaming:
-  model: "usefulsensors/moonshine-streaming-tiny"  # tiny/small/medium
-  device: "auto"   # auto, cpu, cuda, mps
-
-postprocess:
-  model: "usefulsensors/moonshine-streaming-medium"
-  diarization: true
-  min_speakers: 2
-  max_speakers: 8
-
-output:
-  directory: "./transcripts"
-```
-
-Or use presets from the command line:
-
-| Preset | Live Model | Post Model | Diarization | Best for |
-|--------|-----------|------------|-------------|----------|
-| `--preset low` | tiny | small | no | Older hardware, CPU-only |
-| `--preset medium` | tiny | medium | yes | Default, balanced |
-| `--preset high` | small | medium | yes | Good GPU, best quality |
+Both are resampled to 16kHz and normalized to equal RMS before mixing, so a quiet mic isn't drowned out by louder system audio.
 
 ## CLI reference
 
@@ -99,20 +79,14 @@ ttrpglisten [options]
   --config PATH               Path to config.yaml
   --preset {low,medium,high}  Quality preset
   --no-postprocess            Skip the quality pass after stopping
-  --device {auto,cpu,cuda,mps}  Force a compute device
+  --device {auto,cpu,cuda,mps}  Compute device for post-processing
 ```
 
 ## Models
 
-Uses [Moonshine](https://github.com/usefulsensors/moonshine) streaming models by Useful Sensors:
+**Live streaming:** [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) with a zipformer transducer model (int8 quantized, ~30MB). Runs on CPU at 20x real-time speed. Downloaded automatically on first run.
 
-| Model | Parameters | Speed | Use case |
-|-------|-----------|-------|----------|
-| moonshine-streaming-tiny | 34M | Fastest | Live captions on any hardware |
-| moonshine-streaming-small | 123M | Balanced | Live captions with better accuracy |
-| moonshine-streaming-medium | 245M | Best quality | Post-session transcription |
-
-Models are downloaded automatically from HuggingFace on first run (~50MB-500MB depending on size).
+**Post-session quality:** [Moonshine](https://github.com/usefulsensors/moonshine) streaming models via HuggingFace transformers. Uses CUDA/Metal if available for faster processing.
 
 ## License
 
