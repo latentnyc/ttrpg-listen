@@ -57,21 +57,30 @@ def _ensure_model() -> Path:
 
 
 def _create_recognizer(model_dir: Path, provider: str = "cpu") -> sherpa_onnx.OnlineRecognizer:
-    """Create a sherpa-onnx streaming recognizer."""
+    """Create a sherpa-onnx streaming recognizer. Falls back to CPU if CUDA fails."""
     d = str(model_dir)
-    return sherpa_onnx.OnlineRecognizer.from_transducer(
-        tokens=f"{d}/tokens.txt",
-        encoder=f"{d}/encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
-        decoder=f"{d}/decoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
-        joiner=f"{d}/joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
-        num_threads=4,
-        sample_rate=16000,
-        provider=provider,
-        enable_endpoint_detection=True,
-        rule1_min_trailing_silence=0.8,   # long pause -> endpoint
-        rule2_min_trailing_silence=0.4,   # short pause after speech -> endpoint
-        rule3_min_utterance_length=15.0,  # force endpoint after 15s
-    )
+    providers = [provider, "cpu"] if provider != "cpu" else ["cpu"]
+    for prov in providers:
+        try:
+            recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
+                tokens=f"{d}/tokens.txt",
+                encoder=f"{d}/encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+                decoder=f"{d}/decoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+                joiner=f"{d}/joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+                num_threads=4,
+                sample_rate=16000,
+                provider=prov,
+                enable_endpoint_detection=True,
+                rule1_min_trailing_silence=0.8,
+                rule2_min_trailing_silence=0.4,
+                rule3_min_utterance_length=15.0,
+            )
+            return recognizer
+        except RuntimeError:
+            if prov != "cpu":
+                print(f"[warning] {prov} not available, falling back to CPU")
+            else:
+                raise
 
 
 class StreamingPipeline:
