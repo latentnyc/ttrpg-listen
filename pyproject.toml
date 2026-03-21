@@ -15,10 +15,10 @@ dependencies = [
     "silero-vad>=5.0",
     "scipy>=1.11",
     "pyaudiowpatch>=0.2.12",
+    "pyannote-audio>=3.1",
 ]
 
 [project.optional-dependencies]
-diarization = ["pyannote-audio>=3.1"]
 dev = ["ruff", "pytest"]
 
 [project.scripts]
