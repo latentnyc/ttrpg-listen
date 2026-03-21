@@ -8,6 +8,7 @@ build/
 .venv/
 venv/
 transcripts/
+models/
 *.wav
 config.yaml
 .ruff_cache/

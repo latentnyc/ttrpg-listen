@@ -16,7 +16,6 @@ from .audio import DualAudioCapture, list_devices
 from .config import Config, load_config, resolve_device
 from .display import TranscriptDisplay
 from .pipeline import StreamingPipeline
-from .transcribe import TranscriptionEngine
 
 
 def print_devices():
@@ -113,17 +112,14 @@ def main():
     wav_path = Path(cfg.output.directory) / f"session_{session_start.strftime('%Y-%m-%d_%H%M')}.wav"
 
     # Queues connecting the pipeline stages
-    audio_queue: Queue = Queue(maxsize=200)   # raw audio chunks (100ms each)
-    text_queue: Queue = Queue(maxsize=50)     # transcribed text
+    audio_queue: Queue = Queue(maxsize=200)   # raw audio chunks
+    text_queue: Queue = Queue(maxsize=100)    # streaming text updates
 
     # Initialize components
-    console.print("[bold]Loading transcription model...[/bold]")
-    engine = TranscriptionEngine(cfg.streaming.model, device=device)
-    engine.load()
-    console.print(f"[green]Model loaded:[/green] {cfg.streaming.model}")
-
+    console.print("[bold]Loading streaming recognizer...[/bold]")
     capture = DualAudioCapture(audio_queue, cfg.audio, wav_path=wav_path)
-    pipeline = StreamingPipeline(engine, audio_queue, text_queue, cfg.audio.sample_rate)
+    provider = "cuda" if device == "cuda" else "cpu"
+    pipeline = StreamingPipeline(audio_queue, text_queue, cfg.audio.sample_rate, provider=provider)
     display = TranscriptDisplay(text_queue)
 
     # Shutdown handler
