@@ -19,17 +19,11 @@ def diarize_wav(wav_path: Path, min_speakers: int = 2, max_speakers: int = 8) ->
     try:
         from pyannote.audio import Pipeline
     except ImportError:
-        print("[warning] pyannote-audio not installed. Skipping diarization.")
-        print("  Install with: pip install pyannote-audio")
         return []
 
     import os
     hf_token = os.environ.get("HF_TOKEN")
     if not hf_token:
-        print("[warning] HF_TOKEN not set. Speaker diarization requires a HuggingFace token.")
-        print("  1. Create token at: https://huggingface.co/settings/tokens")
-        print("  2. Accept terms at: https://huggingface.co/pyannote/speaker-diarization-3.1")
-        print("  3. Set: export HF_TOKEN=your_token_here")
         return []
 
     try:
