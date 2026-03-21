@@ -13,10 +13,11 @@ from rich.text import Text
 
 
 class TranscriptDisplay:
-    """Displays live streaming transcription in a Rich terminal panel.
+    """Displays live transcription with growing-window updates.
 
-    Handles partial results from sherpa-onnx: each text update replaces
-    the current line until an endpoint is detected (new line starts).
+    Receives (text, is_final) tuples from the pipeline:
+      - (text, False) = partial result, updates current line in place
+      - (text, True)  = final result, commits line and starts new one
     """
 
     def __init__(self, text_queue: Queue, max_lines: int = 30):
@@ -26,23 +27,16 @@ class TranscriptDisplay:
         self._thread: threading.Thread | None = None
         self._completed_lines: list[str] = []
         self._current_partial: str = ""
+        self._current_timestamp: str = ""
         self._console = Console()
-        self._silence_since: datetime | None = None
 
     def _render(self) -> Panel:
         text = Text()
         for line in self._completed_lines[-self.max_lines :]:
             text.append(line + "\n")
 
-        # Show current partial result (being typed)
         if self._current_partial:
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            text.append(f"[{timestamp}] {self._current_partial}", style="dim")
-
-        if self._silence_since and not self._current_partial:
-            elapsed = (datetime.now() - self._silence_since).seconds
-            if elapsed > 30:
-                text.append(f"\n(silence for {elapsed}s...)", style="dim italic")
+            text.append(f"[{self._current_timestamp}] {self._current_partial}", style="bold")
 
         return Panel(
             text,
@@ -53,32 +47,30 @@ class TranscriptDisplay:
         )
 
     def _display_loop(self):
-        with Live(self._render(), console=self._console, refresh_per_second=8) as live:
+        with Live(self._render(), console=self._console, refresh_per_second=4) as live:
             while not self._stop_event.is_set():
                 updated = False
                 try:
                     while True:
-                        text = self.text_queue.get_nowait()
-                        self._silence_since = None
+                        msg = self.text_queue.get_nowait()
+                        text, is_final = msg
                         updated = True
 
-                        if text is None:
-                            # Sentinel: endpoint detected, finalize current line
-                            if self._current_partial:
-                                timestamp = datetime.now().strftime("%H:%M:%S")
-                                self._completed_lines.append(
-                                    f"[{timestamp}] {self._current_partial}"
-                                )
-                                self._current_partial = ""
+                        if not self._current_timestamp:
+                            self._current_timestamp = datetime.now().strftime("%H:%M:%S")
+
+                        if is_final:
+                            self._completed_lines.append(
+                                f"[{self._current_timestamp}] {text}"
+                            )
+                            self._current_partial = ""
+                            self._current_timestamp = ""
                         else:
-                            # Partial or updated result -- replace current line
                             self._current_partial = text
-
                 except Empty:
-                    if not self._current_partial and self._silence_since is None:
-                        self._silence_since = datetime.now()
+                    pass
 
-                if updated or self._stop_event.wait(0.1):
+                if updated or self._stop_event.wait(0.15):
                     live.update(self._render())
 
     def start(self):
@@ -88,10 +80,9 @@ class TranscriptDisplay:
 
     def stop(self):
         self._stop_event.set()
-        # Finalize any remaining partial
         if self._current_partial:
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            self._completed_lines.append(f"[{timestamp}] {self._current_partial}")
+            ts = self._current_timestamp or datetime.now().strftime("%H:%M:%S")
+            self._completed_lines.append(f"[{ts}] {self._current_partial}")
             self._current_partial = ""
         if self._thread:
             self._thread.join(timeout=3)

@@ -16,6 +16,7 @@ from .audio import DualAudioCapture, list_devices
 from .config import Config, load_config, resolve_device
 from .display import TranscriptDisplay
 from .pipeline import StreamingPipeline
+from .transcribe import TranscriptionEngine
 
 
 def print_devices():
@@ -116,10 +117,13 @@ def main():
     text_queue: Queue = Queue(maxsize=100)    # streaming text updates
 
     # Initialize components
-    console.print("[bold]Loading streaming recognizer...[/bold]")
+    console.print("[bold]Loading transcription model...[/bold]")
+    engine = TranscriptionEngine(cfg.streaming.model, device=device)
+    engine.load()
+    console.print(f"[green]Model loaded:[/green] {cfg.streaming.model}")
+
     capture = DualAudioCapture(audio_queue, cfg.audio, wav_path=wav_path)
-    provider = "cuda" if device == "cuda" else "cpu"
-    pipeline = StreamingPipeline(audio_queue, text_queue, cfg.audio.sample_rate, provider=provider)
+    pipeline = StreamingPipeline(engine, audio_queue, text_queue, sample_rate=cfg.audio.sample_rate)
     display = TranscriptDisplay(text_queue)
 
     # Shutdown handler
