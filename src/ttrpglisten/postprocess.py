@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from .config import Config, resolve_device
-from .diarize import align_transcript_with_speakers, diarize_wav
+from .diarize import align_transcript_with_speakers, apply_speaker_names, diarize_wav, infer_speaker_names
 from .transcribe import TranscriptionEngine
 
 
@@ -109,9 +109,12 @@ def postprocess(
             else:
                 progress.update(task4, description="Diarization skipped", completed=True)
 
-    # Align transcript with speakers
+    # Align transcript with speakers and infer names
     if speaker_segments:
         aligned = align_transcript_with_speakers(segments, speaker_segments)
+        names = infer_speaker_names(aligned)
+        if names:
+            aligned = apply_speaker_names(aligned, names)
     else:
         aligned = [(t, text, None) for t, text in segments]
 
