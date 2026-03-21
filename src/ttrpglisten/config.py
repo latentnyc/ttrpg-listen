@@ -19,7 +19,7 @@ class AudioConfig:
 
 @dataclass
 class StreamingConfig:
-    model: str = "usefulsensors/moonshine-streaming-tiny"
+    model: str = "usefulsensors/moonshine-streaming-small"
     device: str = "auto"  # auto, cpu, cuda, mps
     language: str = "en"
 
@@ -61,11 +61,11 @@ PRESETS = {
         "postprocess": {"model": "usefulsensors/moonshine-streaming-small", "diarization": False},
     },
     "medium": {
-        "streaming": {"model": "usefulsensors/moonshine-streaming-tiny"},
+        "streaming": {"model": "usefulsensors/moonshine-streaming-small"},
         "postprocess": {"model": "usefulsensors/moonshine-streaming-medium", "diarization": True},
     },
     "high": {
-        "streaming": {"model": "usefulsensors/moonshine-streaming-small"},
+        "streaming": {"model": "usefulsensors/moonshine-streaming-medium"},
         "postprocess": {"model": "usefulsensors/moonshine-streaming-medium", "diarization": True},
     },
 }

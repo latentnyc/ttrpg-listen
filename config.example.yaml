@@ -10,10 +10,10 @@ audio:
 
 streaming:
   # Model for live captions (smaller = faster, lower latency)
-  # Options: usefulsensors/moonshine-streaming-tiny (fastest)
-  #          usefulsensors/moonshine-streaming-small (balanced)
-  #          usefulsensors/moonshine-streaming-medium (best quality)
-  model: "usefulsensors/moonshine-streaming-tiny"
+  # Options: usefulsensors/moonshine-streaming-tiny (fastest, lower accuracy)
+  #          usefulsensors/moonshine-streaming-small (default, good balance)
+  #          usefulsensors/moonshine-streaming-medium (best quality, slower)
+  model: "usefulsensors/moonshine-streaming-small"
   device: "auto"   # auto, cpu, cuda, mps
   language: "en"
 
