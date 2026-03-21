@@ -19,11 +19,13 @@ def diarize_wav(wav_path: Path, min_speakers: int = 2, max_speakers: int = 8) ->
     try:
         from pyannote.audio import Pipeline
     except ImportError:
+        print("For speaker annotation: pip install pyannote-audio")
         return []
 
     import os
     hf_token = os.environ.get("HF_TOKEN")
     if not hf_token:
+        print("For speaker annotation: set HF_TOKEN env var (https://huggingface.co/settings/tokens)")
         return []
 
     try:
