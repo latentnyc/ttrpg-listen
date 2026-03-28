@@ -73,13 +73,18 @@ def postprocess(
         task2 = progress.add_task(
             f"Loading model {config.postprocess.model}...", total=None
         )
-        engine = TranscriptionEngine(config.postprocess.model, device=device)
+        engine = TranscriptionEngine(
+            config.postprocess.model,
+            device=device,
+            language=config.postprocess.language,
+        )
         engine.load()
         progress.update(task2, description="Model loaded", completed=True)
 
-        # Transcribe in chunks (60-second windows with overlap)
+        # Whisper has a 30-second context window; Moonshine handles longer chunks
         task3 = progress.add_task("Transcribing full session...", total=None)
-        chunk_size = 60 * sample_rate  # 60 seconds
+        chunk_seconds = 30 if engine.is_whisper else 60
+        chunk_size = chunk_seconds * sample_rate
         overlap = 2 * sample_rate  # 2-second overlap
         segments = []
         pos = 0
@@ -99,11 +104,15 @@ def postprocess(
         speaker_segments = []
         if config.postprocess.diarization:
             task4 = progress.add_task("Running speaker diarization...", total=None)
-            speaker_segments = diarize_wav(
-                wav_path,
-                min_speakers=config.postprocess.min_speakers,
-                max_speakers=config.postprocess.max_speakers,
-            )
+            try:
+                speaker_segments = diarize_wav(
+                    wav_path,
+                    min_speakers=config.postprocess.min_speakers,
+                    max_speakers=config.postprocess.max_speakers,
+                )
+            except Exception as e:
+                console.print(f"[yellow]Diarization failed, continuing without speaker labels:[/yellow] {e}")
+                speaker_segments = []
             if speaker_segments:
                 progress.update(task4, description=f"Diarization complete ({len(set(s['speaker'] for s in speaker_segments))} speakers)", completed=True)
             else:

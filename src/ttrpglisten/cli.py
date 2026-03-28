@@ -13,7 +13,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .audio import DualAudioCapture, list_devices
-from .config import Config, load_config, resolve_device
+from .config import load_config, resolve_device
 from .display import TranscriptDisplay
 from .pipeline import StreamingPipeline
 from .transcribe import TranscriptionEngine
@@ -45,6 +45,20 @@ def print_devices():
     console.print(table)
     console.print("\n[dim]Tip: Loopback devices capture system audio. "
                   "Use --loopback-device ID for remote players, --mic-device ID for your mic.[/dim]")
+
+
+def _save_live_transcript(
+    cfg, timestamp: str, lines: list[str], console: Console, label: str = "Live transcript saved",
+) -> Path:
+    """Save streaming transcript lines to a text file."""
+    output_dir = Path(cfg.output.directory)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"session_{timestamp}_live.txt"
+    with open(output_path, "w", encoding="utf-8") as f:
+        for line in lines:
+            f.write(line + "\n")
+    console.print(f"\n[green]{label}:[/green] {output_path}")
+    return output_path
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -110,7 +124,8 @@ def main():
 
     # Session setup
     session_start = datetime.now()
-    wav_path = Path(cfg.output.directory) / f"session_{session_start.strftime('%Y-%m-%d_%H%M')}.wav"
+    timestamp = session_start.strftime("%Y-%m-%d_%H%M")
+    wav_path = Path(cfg.output.directory) / f"session_{timestamp}.wav"
 
     # Queues connecting the pipeline stages
     audio_queue: Queue = Queue(maxsize=200)   # raw audio chunks
@@ -150,6 +165,7 @@ def main():
         capture.start()
     except RuntimeError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
+        del engine
         return
 
     # Log active devices
@@ -171,38 +187,33 @@ def main():
     pipeline.start()
     display.start()
 
-    # Wait for shutdown signal
     try:
-        signal.pause()
-    except AttributeError:
-        # signal.pause() not available on Windows, use a loop
-        import time
-        while shutdown_count == 0:
-            time.sleep(0.5)
-
-    # Post-processing
-    if not args.no_postprocess and shutdown_count < 2:
-        console.print("\n[bold]Running post-session processing...[/bold]")
+        # Wait for shutdown signal
         try:
-            from .postprocess import postprocess
-            output = postprocess(wav_path, cfg, session_start, display.get_full_transcript())
-        except Exception as e:
-            console.print(f"[red]Post-processing failed:[/red] {e}")
-            # Still save streaming transcript as fallback
-            fallback_path = Path(cfg.output.directory) / f"session_{session_start.strftime('%Y-%m-%d_%H%M')}_live.txt"
-            fallback_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(fallback_path, "w", encoding="utf-8") as f:
-                for line in display.get_full_transcript():
-                    f.write(line + "\n")
-            console.print(f"[yellow]Live transcript saved as fallback:[/yellow] {fallback_path}")
-    elif shutdown_count < 2:
-        # Save streaming transcript
-        output_dir = Path(cfg.output.directory)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / f"session_{session_start.strftime('%Y-%m-%d_%H%M')}_live.txt"
-        with open(output_path, "w", encoding="utf-8") as f:
-            for line in display.get_full_transcript():
-                f.write(line + "\n")
-        console.print(f"\n[green]Live transcript saved:[/green] {output_path}")
+            signal.pause()
+        except AttributeError:
+            import time
+            while shutdown_count == 0:
+                time.sleep(0.5)
+
+        # Post-processing
+        if not args.no_postprocess and shutdown_count < 2:
+            console.print("\n[bold]Running post-session processing...[/bold]")
+            try:
+                from .postprocess import postprocess
+                postprocess(wav_path, cfg, session_start, display.get_full_transcript())
+            except Exception as e:
+                console.print(f"[red]Post-processing failed:[/red] {e}")
+                _save_live_transcript(
+                    cfg, timestamp, display.get_full_transcript(), console,
+                    label="Live transcript saved as fallback",
+                )
+        elif shutdown_count < 2:
+            _save_live_transcript(cfg, timestamp, display.get_full_transcript(), console)
+    finally:
+        if shutdown_count == 0:
+            capture.stop()
+            pipeline.stop()
+            display.stop()
 
     console.print("[bold]Session ended.[/bold]")

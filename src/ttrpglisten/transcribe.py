@@ -7,16 +7,27 @@ import torch
 from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq
 
 
-class TranscriptionEngine:
-    """Manages model loading and transcription for Moonshine and Whisper."""
+# TTRPG vocabulary prompt to improve domain recognition (used with Whisper models)
+TTRPG_PROMPT = (
+    "Dungeons & Dragons, TTRPG session. d20, armor class, hit points, initiative, "
+    "saving throw, spell slot, cantrip, perception check, attack roll, natural 20, "
+    "dungeon master, player character, non-player character, skill check, "
+    "advantage, disadvantage, proficiency bonus."
+)
 
-    def __init__(self, model_name: str, device: str = "cpu"):
+
+class TranscriptionEngine:
+    """Manages model loading and transcription for Moonshine and Whisper models."""
+
+    def __init__(self, model_name: str, device: str = "cpu", language: str = "en"):
         self.model_name = model_name
         self.device = device
+        self.language = language
         self.dtype = torch.float16 if device in ("cuda", "mps") else torch.float32
         self.model = None
         self.processor = None
-        self._is_whisper = "whisper" in model_name.lower()
+        self.is_whisper = "whisper" in model_name.lower()
+        self._prompt_ids = None
 
     def load(self):
         """Load the model and processor. Call this once at startup."""
@@ -29,6 +40,10 @@ class TranscriptionEngine:
         except (RuntimeError, torch.cuda.OutOfMemoryError):
             if self.device != "cpu":
                 print(f"[warning] {self.device.upper()} out of memory, falling back to CPU")
+                if self.model is not None:
+                    del self.model
+                    self.model = None
+                torch.cuda.empty_cache()
                 self.device = "cpu"
                 self.dtype = torch.float32
                 self.model = AutoModelForSpeechSeq2Seq.from_pretrained(
@@ -37,6 +52,15 @@ class TranscriptionEngine:
                 ).to("cpu")
             else:
                 raise
+
+        if self.is_whisper:
+            try:
+                self._prompt_ids = self.processor.get_prompt_ids(
+                    TTRPG_PROMPT, return_tensors="pt"
+                ).to(self.device)
+            except Exception:
+                print("[warning] Could not encode TTRPG vocabulary prompt; continuing without it")
+                self._prompt_ids = None
 
     def transcribe(self, audio: np.ndarray, sample_rate: int = 16000) -> str:
         """Transcribe a numpy audio array (float32, mono) to text."""
@@ -52,24 +76,43 @@ class TranscriptionEngine:
             audio,
             return_tensors="pt",
             sampling_rate=sample_rate,
-            return_attention_mask=True,
         )
-        inputs = inputs.to(self.device, self.dtype)
 
-        generate_kwargs = {}
-        if self._is_whisper:
-            generate_kwargs["language"] = "en"
-            generate_kwargs["task"] = "transcribe"
-            max_length = max(int(len(audio) / sample_rate * 12.5), 20)
-        else:
-            max_length = max(int(len(audio) / sample_rate * 6.5), 10)
+        if self.is_whisper:
+            return self._transcribe_whisper(inputs, audio, sample_rate)
+        return self._transcribe_moonshine(inputs, audio, sample_rate)
+
+    def _transcribe_whisper(
+        self, inputs, audio: np.ndarray, sample_rate: int
+    ) -> str:
+        """Transcribe using Whisper-specific generate parameters."""
+        inputs = inputs.to(self.device, self.dtype)
+        max_length = max(int(len(audio) / sample_rate * 4.5), 10)
+
+        generate_kwargs = {
+            "input_features": inputs.input_features,
+            "max_length": max_length,
+            "language": self.language,
+        }
+        if self._prompt_ids is not None:
+            generate_kwargs["prompt_ids"] = self._prompt_ids
+
+        with torch.no_grad():
+            generated_ids = self.model.generate(**generate_kwargs)
+
+        return self.processor.decode(generated_ids[0], skip_special_tokens=True).strip()
+
+    def _transcribe_moonshine(
+        self, inputs, audio: np.ndarray, sample_rate: int
+    ) -> str:
+        """Transcribe using Moonshine models."""
+        inputs = inputs.to(self.device)
+        max_length = max(int(len(audio) / sample_rate * 6.5), 10)
 
         with torch.no_grad():
             generated_ids = self.model.generate(
                 **inputs,
                 max_length=max_length,
-                **generate_kwargs,
             )
 
-        text = self.processor.decode(generated_ids[0], skip_special_tokens=True)
-        return text.strip()
+        return self.processor.decode(generated_ids[0], skip_special_tokens=True).strip()

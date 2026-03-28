@@ -5,8 +5,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import numpy as np
-
 
 def diarize_wav(wav_path: Path, min_speakers: int = 2, max_speakers: int = 8) -> list[dict]:
     """Run speaker diarization on a WAV file.
@@ -66,7 +64,13 @@ def align_transcript_with_speakers(
         return [(t, text, "Unknown") for t, text in transcript_segments]
 
     result = []
-    for time_offset, text in transcript_segments:
+    for i, (time_offset, text) in enumerate(transcript_segments):
+        # Estimate segment duration from gap to next segment (or default 10s)
+        if i + 1 < len(transcript_segments):
+            segment_duration = transcript_segments[i + 1][0] - time_offset
+        else:
+            segment_duration = 10.0
+
         # Find the speaker active at this time
         best_speaker = "Unknown"
         best_overlap = 0.0
@@ -74,7 +78,7 @@ def align_transcript_with_speakers(
         for seg in speaker_segments:
             # Check overlap between transcript time and speaker segment
             overlap_start = max(time_offset, seg["start"])
-            overlap_end = min(time_offset + 10.0, seg["end"])  # assume ~10s per segment
+            overlap_end = min(time_offset + segment_duration, seg["end"])
             overlap = max(0, overlap_end - overlap_start)
 
             if overlap > best_overlap:

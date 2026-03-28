@@ -41,6 +41,7 @@ class VadChunker:
 
         # Silero VAD model
         self._vad_model = None
+        self._speech_buffer = np.zeros(0, dtype=np.float32)
 
     def _load_vad(self):
         """Load Silero VAD model."""
@@ -94,6 +95,7 @@ class VadChunker:
                                 self.speech_queue.put(self._speech_buffer.copy())
                             speech_start = -1
                             silence_counter = 0
+                            self._vad_model.reset_states()
 
                 # Force-emit if speech too long (avoid waiting forever on monologues)
                 if speech_start != -1 and len(self._speech_buffer) >= self.max_speech_samples:
@@ -104,7 +106,7 @@ class VadChunker:
                     self._vad_model.reset_states()
 
         # Flush remaining speech
-        if speech_start != -1 and hasattr(self, "_speech_buffer"):
+        if speech_start != -1:
             if len(self._speech_buffer) >= self.min_speech_samples:
                 self.speech_queue.put(self._speech_buffer.copy())
 

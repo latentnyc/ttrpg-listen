@@ -27,6 +27,7 @@ class StreamingConfig:
 @dataclass
 class PostprocessConfig:
     model: str = "openai/whisper-large-v3-turbo"
+    language: str = "en"
     diarization: bool = True
     min_speakers: int = 2
     max_speakers: int = 8
@@ -58,7 +59,7 @@ class Config:
 PRESETS = {
     "low": {
         "streaming": {"model": "usefulsensors/moonshine-streaming-tiny"},
-        "postprocess": {"model": "usefulsensors/moonshine-streaming-medium", "diarization": False},
+        "postprocess": {"model": "openai/whisper-large-v3-turbo", "diarization": False},
     },
     "medium": {
         "streaming": {"model": "usefulsensors/moonshine-streaming-small"},
@@ -90,13 +91,36 @@ def resolve_device(requested: str) -> str:
     return "cpu"
 
 
+def _validate_config(cfg: Config):
+    """Validate config values and raise ValueError on invalid settings."""
+    if cfg.audio.sample_rate <= 0:
+        raise ValueError(f"audio.sample_rate must be positive, got {cfg.audio.sample_rate}")
+    if cfg.postprocess.min_speakers < 1:
+        raise ValueError(f"postprocess.min_speakers must be >= 1, got {cfg.postprocess.min_speakers}")
+    if cfg.postprocess.max_speakers < cfg.postprocess.min_speakers:
+        raise ValueError(
+            f"postprocess.max_speakers ({cfg.postprocess.max_speakers}) "
+            f"must be >= min_speakers ({cfg.postprocess.min_speakers})"
+        )
+    if cfg.streaming.device not in ("auto", "cpu", "cuda", "mps"):
+        raise ValueError(f"streaming.device must be auto/cpu/cuda/mps, got {cfg.streaming.device!r}")
+    if cfg.vad.threshold < 0.0 or cfg.vad.threshold > 1.0:
+        raise ValueError(f"vad.threshold must be between 0 and 1, got {cfg.vad.threshold}")
+    if not cfg.postprocess.language or not isinstance(cfg.postprocess.language, str):
+        raise ValueError(f"postprocess.language must be a non-empty string, got {cfg.postprocess.language!r}")
+
+
 def load_config(config_path: str | Path | None = None, preset: str | None = None) -> Config:
     """Load config from YAML file, apply preset overrides, return Config."""
     cfg = Config()
 
     if config_path and os.path.exists(config_path):
-        with open(config_path) as f:
-            data = yaml.safe_load(f) or {}
+        try:
+            with open(config_path) as f:
+                data = yaml.safe_load(f) or {}
+        except yaml.YAMLError as e:
+            print(f"[warning] Failed to parse config file {config_path}: {e}")
+            data = {}
         for section_name in ("audio", "streaming", "postprocess", "output", "vad"):
             if section_name in data:
                 _apply_dict(getattr(cfg, section_name), data[section_name])
@@ -105,4 +129,5 @@ def load_config(config_path: str | Path | None = None, preset: str | None = None
         for section_name, overrides in PRESETS[preset].items():
             _apply_dict(getattr(cfg, section_name), overrides)
 
+    _validate_config(cfg)
     return cfg

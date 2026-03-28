@@ -169,6 +169,8 @@ class _LoopbackThread:
         if self._thread:
             # Don't wait too long -- blocking read may be stuck if no audio playing
             self._thread.join(timeout=2)
+            if self._thread.is_alive():
+                print("[warning] Loopback thread did not stop in time (will be cleaned up on exit)")
             self._thread = None
 
 

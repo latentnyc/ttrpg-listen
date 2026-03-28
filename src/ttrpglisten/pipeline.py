@@ -11,6 +11,7 @@ import threading
 from queue import Empty, Queue
 
 import numpy as np
+import torch
 
 from .transcribe import TranscriptionEngine
 
@@ -80,7 +81,9 @@ class StreamingPipeline:
             # Transcribe the full window so far
             try:
                 text = self.engine.transcribe(window, self.sample_rate)
-            except Exception as e:
+            except torch.cuda.OutOfMemoryError:
+                raise
+            except RuntimeError as e:
                 text = f"[error: {e}]"
 
             if text:
