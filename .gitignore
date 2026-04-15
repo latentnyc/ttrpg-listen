@@ -8,7 +8,10 @@ build/
 .venv/
 venv/
 transcripts/
-models/
+# Downloaded model weights (not the src/ttrpglisten/models/ package)
+/models/
 *.wav
 config.yaml
 .ruff_cache/
+.pid
+.env

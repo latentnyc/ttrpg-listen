@@ -1,159 +1,197 @@
-# ttrpg-listen
+# TTRPG Listen
 
-Local AI-powered live transcription for online TTRPG sessions. Runs entirely on your machine -- no cloud services, no data leaves your computer.
+Real-time AI-powered transcription for tabletop roleplaying sessions. Windows 11 desktop app with a dark-mode GUI that captures system audio and microphone, transcribes with speaker identification, and keeps a full session history.
 
-Built for players who need live captions or want a searchable record of their sessions across any voice client (Discord, Foundry VTT, Roll20, etc.).
+Runs entirely on your machine using your GPU. No cloud services, no data leaves your computer.
 
 ## What it does
 
-- **Live streaming captions** -- text updates in real time as people speak using a growing-window transcription approach with [Moonshine](https://github.com/usefulsensors/moonshine) models
-- **Dual audio capture** -- WASAPI loopback (system audio from any output device including Bluetooth) + your microphone
-- **Post-session transcript** -- after you stop, re-processes the full recording with [Whisper Large v3 Turbo](https://huggingface.co/openai/whisper-large-v3-turbo) for significantly higher accuracy
-- **Speaker diarization** (optional) -- labels who said what in the final transcript using pyannote-audio, with automatic name inference from self-introductions
-- **TTRPG vocabulary boost** -- Whisper post-processing uses a domain-specific prompt to improve recognition of D&D terms (armor class, spell slot, initiative, etc.)
-- **Quality presets** -- low/medium/high presets to balance speed vs. accuracy for both live and post-processing
+**Three-panel interface:**
+
+- **Quick Caption** (left) -- reads Windows 11 Live Captions in real time, keeps the full session history that Live Captions normally discards. Handles retroactive corrections from the speech recognizer without duplicating text.
+
+- **Accurate Caption** (right) -- high-quality transcription using [whisperx](https://github.com/m-bain/whisperX) (Whisper + wav2vec2 forced alignment) with color-coded speaker identification via [pyannote-audio](https://github.com/pyannote/pyannote-audio). Processes audio in 30-second chunks with overlapping 60-second diarization windows to correct speaker assignments at chunk boundaries.
+
+- **Controls** (bottom) -- start/stop recording, toggle horizontal/vertical layout, select game system (D&D or Blades in the Dark vocabulary prompts), choose audio devices, real-time FFT equalizer displays for mic and system audio, scrollable status log.
+
+**Key features:**
+
+- Dual audio capture: WASAPI loopback (system audio) + microphone as separate channels
+- Mic channel transcribed independently and attributed as "Microphone" (no diarization needed for the local player)
+- System audio channel transcribed and speaker-diarized to identify remote players
+- VRAM-aware model selection (tiny through large-v3 based on GPU memory)
+- Crash-safe WAV recording with periodic header updates
+- Game-system-specific vocabulary prompts for better recognition of TTRPG terms
+- Low-priority GPU/CPU scheduling so the app doesn't interfere with gameplay
+
+## Requirements
+
+- **Windows 11** (for Live Captions and WASAPI loopback)
+- **Python 3.11+**
+- **NVIDIA GPU** with 6+ GB VRAM recommended (works on CPU but much slower)
+  - GTX 1070 (8 GB): whisper-large-v3-turbo
+  - RTX 3090 (24 GB): whisper-large-v3
+- **HuggingFace account** with accepted terms for [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1)
 
 ## Quick start
 
-**Requirements:** Python 3.11+, Windows (WASAPI loopback), a microphone
+### Option 1: Start script (recommended)
 
-```bash
-# Clone and install
+```batch
 git clone https://github.com/latentnyc/ttrpg-listen.git
 cd ttrpg-listen
-pip install -e .
-
-# For CUDA (NVIDIA GPU) -- recommended for Whisper post-processing
-pip install --force-reinstall torch torchaudio --index-url https://download.pytorch.org/whl/cu128
-
-# For speaker diarization (optional, pulls in ~2GB of models)
-pip install -e ".[diarization]"
 ```
 
-On first run, models download automatically from HuggingFace (Moonshine ~30MB for live, Whisper Turbo ~800MB for post-processing).
+Create a `.env` file with your HuggingFace token (required for speaker diarization):
+
+```
+HF_TOKEN=hf_your_token_here
+```
+
+Then double-click `ttrpg-start.bat` or run it from a terminal. It will:
+1. Create a virtual environment
+2. Install PyTorch with CUDA 12.6
+3. Install all dependencies
+4. Launch the app
+
+To stop: close the window, press Ctrl+C in the terminal, or run `ttrpg-stop.bat`.
+
+### Option 2: Manual install
 
 ```bash
-# List your audio devices
-ttrpglisten --list-devices
+python -m venv .venv
+.venv\Scripts\activate
 
-# Start transcribing (auto-detects system audio loopback + mic)
-ttrpglisten
+# Install PyTorch with CUDA (must be 2.8.x for whisperx compatibility)
+pip install torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu126
 
-# Or specify devices explicitly
-ttrpglisten --loopback-device 10 --mic-device 1
+# Install the app
+pip install -e .
 
-# Use a quality preset
-ttrpglisten --preset high
+# Run
+python -m ttrpglisten
 ```
 
-Press **Ctrl+C** to stop. The tool will then run a quality pass over the full recording and save a transcript to `./transcripts/`. Press **Ctrl+C** again to skip post-processing and exit immediately.
+### Enable Live Captions
+
+Press **Win+Ctrl+L** or go to **Settings > Accessibility > Captions** and enable Live Captions. The app reads the Live Captions window via Windows UI Automation.
 
 ## How it works
 
 ```
-System Audio (WASAPI loopback) --+
-                                 +-- normalize + mix --> Moonshine -------> Live Terminal
-Microphone ----------------------+     (RMS balancing)   (growing-window    Display
-         |                                                transcription)   (Rich panel)
-         |
-         +-- stereo WAV ---------> (on Ctrl+C) --> Whisper Turbo + Diarization --> Transcript
-             (left=system,                          (30s chunked       (pyannote)
-              right=mic)                             re-transcription)
+                                    +---> Quick Caption panel
+Windows Live Captions ----------->  |     (full session history)
+  (UI Automation polling)           |
+
+System Audio (WASAPI loopback) ---> AudioCaptureWorker --+-> WAV file (stereo)
+Microphone (WASAPI) ------------>   (separate channels)  |   L=system, R=mic
+                                                         |
+                                                         +-> SharedAudioBuffer
+                                                              |          |
+                                               +--------------+          |
+                                               |                         |
+                                    TranscriptionWorker          DiarizationWorker
+                                     (whisperx pipeline)          (pyannote + whisperx
+                                               |                  speaker assignment)
+                                     +---------+---------+              |
+                                     |                   |              |
+                              Loopback segments    Mic segments   Speaker corrections
+                              (speaker TBD)        ("Microphone")       |
+                                     |                   |              |
+                                     +----> Accurate Caption panel <----+
+                                            (color-coded speakers)
 ```
 
-**Live stream:** Audio from both sources is normalized to equal RMS and mixed. Moonshine processes audio with an expanding window (1s, 2s, 3s... up to 10s), re-transcribing at each tick so accuracy improves as more context arrives. The display updates the current line in place with partial results, then commits the line and starts a new one when the window fills.
+### Transcription pipeline (per 30s chunk)
 
-**Post-session:** Whisper Large v3 Turbo re-transcribes the full WAV recording in 30-second chunks (with 2s overlap) for much better accuracy (~2.5% WER vs ~6.65% for Moonshine). A TTRPG-specific vocabulary prompt helps Whisper correctly recognize game terms. If diarization is enabled, pyannote-audio identifies individual speakers and the tool scans for self-introductions to map speaker labels to names.
+1. **whisperx.transcribe()** -- VAD-segmented batched Whisper with game-specific vocabulary prompt
+2. **whisperx.align()** -- wav2vec2 forced alignment for precise word-level timestamps
+3. **Loopback segments** displayed immediately with generic "Speaker" label
+4. **Mic segments** displayed immediately as "Microphone"
 
-## Audio capture
+### Diarization pipeline (60s overlapping windows)
 
-The tool captures two audio sources simultaneously:
+1. **pyannote speaker-diarization-3.1** on the loopback audio
+2. **whisperx.assign_word_speakers()** merges word timestamps with speaker segments
+3. Retroactively updates "Speaker" labels to "SPEAKER_00", "SPEAKER_01", etc.
+4. Overlapping windows cross-check speaker assignments at chunk boundaries
 
-- **System loopback** via [pyaudiowpatch](https://github.com/s0d3s/PyAudioWPatch) -- captures from whatever output device Windows is using (speakers, Bluetooth headphones, USB audio, HDMI). This is how you hear remote players.
-- **Microphone** via [sounddevice](https://python-sounddevice.readthedocs.io/) -- captures your voice.
+### Audio capture
 
-Both are resampled to 16kHz and normalized to equal RMS before mixing, so a quiet mic isn't drowned out by louder system audio. Audio is recorded to a stereo WAV file for post-session processing.
+- **System loopback** via [pyaudiowpatch](https://github.com/s0d3s/PyAudioWPatch) -- captures from whatever Windows output device is active (speakers, Bluetooth, USB, HDMI)
+- **Microphone** via [sounddevice](https://python-sounddevice.readthedocs.io/) -- WASAPI devices only for best quality
+- Both resampled to 16kHz, mic boosted with 3x software gain
+- Stereo WAV written with crash-safe periodic flushing (data every 5s, header every 30s)
 
-## Configuration
+## Game system prompts
 
-Copy `config.example.yaml` to `config.yaml` and adjust as needed:
+The app uses domain-specific vocabulary prompts to improve Whisper's recognition of game terminology. Select the game system in the Controls panel before recording.
 
-```yaml
-audio:
-  loopback_device: null   # null = auto-detect, or device ID
-  mic_device: null
-  sample_rate: 16000
+**Dungeons & Dragons** -- d20, armor class, hit points, initiative, saving throw, spell slot, cantrip, perception check, attack roll, natural 20, advantage, disadvantage, proficiency bonus, etc.
 
-streaming:
-  model: "usefulsensors/moonshine-streaming-small"
-  device: "auto"   # auto, cpu, cuda, mps
+**Blades in the Dark** -- action roll, resistance roll, position, effect, stress, trauma, flashback, score, heist, downtime, engagement roll, fortune roll, devil's bargain, Doskvol, Duskwall, ghost field, electroplasm, Spirit Wardens, etc.
 
-postprocess:
-  model: "openai/whisper-large-v3-turbo"
-  language: "en"
-  diarization: true
-  min_speakers: 2
-  max_speakers: 8
+## VRAM usage
 
-output:
-  directory: "./transcripts"
-```
+| GPU VRAM | Whisper model | Diarization |
+|----------|--------------|-------------|
+| < 2 GB | whisper-tiny | disabled |
+| 2-4 GB | whisper-small | enabled |
+| 4-6 GB | whisper-medium | enabled |
+| 6-12 GB | whisper-large-v3-turbo | enabled |
+| 12+ GB | whisper-large-v3 | enabled |
 
-### Presets
-
-| Preset | Live model | Post-processing model | Diarization |
-|--------|-----------|----------------------|-------------|
-| `low` | moonshine-streaming-tiny | whisper-large-v3-turbo | off |
-| `medium` (default) | moonshine-streaming-small | whisper-large-v3-turbo | on |
-| `high` | moonshine-streaming-medium | whisper-large-v3-turbo | on |
-
-## CLI reference
-
-```
-ttrpglisten [options]
-
-  --list-devices              Show available audio devices
-  --loopback-device ID        System audio device (remote players)
-  --mic-device ID             Microphone device (your voice)
-  --config PATH               Path to config.yaml
-  --preset {low,medium,high}  Quality preset
-  --no-postprocess            Skip the quality pass after stopping
-  --device {auto,cpu,cuda,mps}  Compute device
-```
-
-## Models
-
-**Live streaming:** [Moonshine](https://github.com/usefulsensors/moonshine) streaming models via HuggingFace transformers. Optimized for low-latency on-device transcription:
-
-| Model | Params | Use case |
-|-------|--------|----------|
-| `usefulsensors/moonshine-streaming-tiny` | Smallest | Fastest live captions, lower accuracy |
-| `usefulsensors/moonshine-streaming-small` | 49M | Default for live -- good balance of speed and accuracy |
-| `usefulsensors/moonshine-streaming-medium` | 245M | Best live accuracy, higher latency |
-
-**Post-session:** [Whisper Large v3 Turbo](https://huggingface.co/openai/whisper-large-v3-turbo) (809M params) -- OpenAI's fastest large Whisper variant with ~2.5% word error rate. Processes audio in 30-second chunks with a TTRPG vocabulary prompt for improved domain recognition. Uses CUDA or Metal acceleration if available, falls back to CPU automatically.
-
-**Speaker diarization (optional):** [pyannote-audio](https://github.com/pyannote/pyannote-audio) speaker-diarization-3.1 for identifying who said what.
+The app runs transcription and diarization at below-normal thread priority and configures CUDA to yield mode, so it won't interfere with games or Discord running on the same GPU.
 
 ## Output
 
-Transcripts are saved to the `transcripts/` directory:
+Recordings are saved to `transcripts/`:
 
-- **WAV file:** `session_YYYY-MM-DD_HHMM.wav` -- stereo recording (left=system audio, right=mic)
-- **Transcript:** `session_YYYY-MM-DD_HHMM.txt` -- timestamped text with optional speaker labels
+- **WAV** -- `session_YYYY-MM-DD_HHMM.wav` -- stereo (left = system audio, right = mic with gain boost)
+- **Transcript** -- `session_YYYY-MM-DD_HHMM.txt` -- timestamped text with speaker labels
 
 Example transcript:
 ```
-Session: 2026-03-21 13:55
-Duration: 1h 30m
-Model: openai/whisper-large-v3-turbo
-Speakers: Tim, Sarah
+TTRPG Listen - Session Transcript
+Date: 2026-04-14 21:13
+Game: Dungeons & Dragons
+==================================================
 
----
+[00:00] SPEAKER_03: We're going to go back downstairs.
 
-[00:00:05] Tim: Can you hear me?
+[00:02] SPEAKER_03: Is anybody reacting in this moment?
 
-[00:00:08] Sarah: Yes, loud and clear.
+[00:06] SPEAKER_00: I'm still holding my cocktail.
+
+[00:08] SPEAKER_02: Push past this nun, because hell no.
+
+[00:12] Microphone: Hey, do you guys think that we should?
+```
+
+## Project structure
+
+```
+src/ttrpglisten/
+  app.py                 -- QApplication, dark Fusion theme, entry point
+  main_window.py         -- 3-panel layout, worker lifecycle, signal wiring
+  panels/
+    quick_caption.py     -- Live Captions history with retroactive corrections
+    accurate_caption.py  -- Color-coded speaker-attributed transcription
+    controls.py          -- Buttons, device selectors, equalizers, status log
+  widgets/
+    equalizer.py         -- Real-time FFT bar visualizer (16 bands, 30fps)
+  workers/
+    live_caption.py      -- Windows UI Automation Live Captions reader
+    audio_capture.py     -- WASAPI loopback + sounddevice mic capture
+    transcription.py     -- whisperx transcription + forced alignment
+    diarization.py       -- pyannote diarization + speaker assignment
+  audio/
+    devices.py           -- WASAPI device enumeration
+    recorder.py          -- SharedAudioBuffer + crash-safe WAV writer
+  models/
+    selector.py          -- VRAM detection, model selection
+  utils/
+    config.py            -- QSettings persistence, game system prompts
 ```
 
 ## License

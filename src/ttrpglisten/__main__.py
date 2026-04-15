@@ -1,5 +1,7 @@
 """Entry point for `python -m ttrpglisten`."""
 
-from .cli import main
+import sys
 
-main()
+from .app import main
+
+sys.exit(main())
