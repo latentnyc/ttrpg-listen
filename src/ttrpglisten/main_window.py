@@ -1,15 +1,22 @@
-"""Main window - 3-panel layout with worker lifecycle management."""
+"""Main window - platform-aware layout + worker lifecycle management.
 
+Windows: 2 caption panels (Quick from Live Captions + Accurate from whisperx)
+         in a togglable splitter, plus the Controls panel below.
+macOS:   only the Accurate caption panel + Controls (no Live Captions API).
+"""
+
+import sys
 from pathlib import Path
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QThread, Slot
 from PySide6.QtWidgets import QMainWindow, QSplitter, QVBoxLayout, QWidget
 
-from .panels.quick_caption import QuickCaptionPanel
 from .panels.accurate_caption import AccurateCaptionPanel
 from .panels.controls import ControlPanel
 from .utils.config import AppConfig
+
+IS_WINDOWS = sys.platform == "win32"
 
 
 class MainWindow(QMainWindow):
@@ -30,10 +37,14 @@ class MainWindow(QMainWindow):
         self._diarization_thread = None
         self._shared_buffer = None
 
+        # UI references (only set when their panel exists)
+        self._quick_panel = None
+        self._splitter = None
 
         self._setup_ui()
         self._restore_settings()
-        self._start_live_captions()
+        if IS_WINDOWS:
+            self._start_live_captions()
 
     def _setup_ui(self):
         central = QWidget()
@@ -42,36 +53,43 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(4, 4, 4, 4)
         main_layout.setSpacing(4)
 
-        # Top: splitter with two caption panels
-        self._splitter = QSplitter(Qt.Orientation.Horizontal)
-        self._quick_panel = QuickCaptionPanel()
         self._accurate_panel = AccurateCaptionPanel()
-        self._splitter.addWidget(self._quick_panel)
-        self._splitter.addWidget(self._accurate_panel)
-        self._splitter.setStretchFactor(0, 1)
-        self._splitter.setStretchFactor(1, 1)
-        main_layout.addWidget(self._splitter, stretch=1)
+
+        if IS_WINDOWS:
+            from .panels.quick_caption import QuickCaptionPanel
+
+            self._quick_panel = QuickCaptionPanel()
+            self._splitter = QSplitter(Qt.Orientation.Horizontal)
+            self._splitter.addWidget(self._quick_panel)
+            self._splitter.addWidget(self._accurate_panel)
+            self._splitter.setStretchFactor(0, 1)
+            self._splitter.setStretchFactor(1, 1)
+            main_layout.addWidget(self._splitter, stretch=1)
+        else:
+            main_layout.addWidget(self._accurate_panel, stretch=1)
 
         # Bottom: control panel
-        self._control_panel = ControlPanel()
+        self._control_panel = ControlPanel(show_layout_toggle=IS_WINDOWS)
         self._control_panel.setMaximumHeight(220)
         main_layout.addWidget(self._control_panel, stretch=0)
 
         # Wire control panel signals
         self._control_panel.start_requested.connect(self._start_recording)
         self._control_panel.stop_requested.connect(self._stop_recording)
-        self._control_panel.layout_toggle_requested.connect(self._toggle_layout)
+        self._control_panel.mic_settings_changed.connect(self._on_mic_settings_changed)
+        if IS_WINDOWS:
+            self._control_panel.layout_toggle_requested.connect(self._toggle_layout)
 
         # Populate devices
         self._populate_devices()
 
     def _restore_settings(self):
-        orientation = self._config.layout_orientation
-        if orientation == "vertical":
-            self._splitter.setOrientation(Qt.Orientation.Vertical)
-        else:
-            self._splitter.setOrientation(Qt.Orientation.Horizontal)
-
+        if self._splitter is not None:
+            orientation = self._config.layout_orientation
+            if orientation == "vertical":
+                self._splitter.setOrientation(Qt.Orientation.Vertical)
+            else:
+                self._splitter.setOrientation(Qt.Orientation.Horizontal)
         self._control_panel.set_game_system(self._config.game_system)
 
     def _populate_devices(self):
@@ -103,6 +121,8 @@ class MainWindow(QMainWindow):
             self._control_panel.log_message(f"Device enumeration error: {e}")
 
     def _toggle_layout(self):
+        if self._splitter is None:
+            return
         current = self._splitter.orientation()
         if current == Qt.Orientation.Horizontal:
             self._splitter.setOrientation(Qt.Orientation.Vertical)
@@ -112,6 +132,7 @@ class MainWindow(QMainWindow):
             self._config.layout_orientation = "horizontal"
 
     def _start_live_captions(self):
+        """Windows-only: start the Live Captions UI Automation reader."""
         try:
             from .workers.live_caption import LiveCaptionWorker
 
@@ -120,7 +141,10 @@ class MainWindow(QMainWindow):
             self._live_caption_worker.moveToThread(self._live_caption_thread)
 
             self._live_caption_thread.started.connect(self._live_caption_worker.run)
-            self._live_caption_worker.caption_snapshot.connect(self._quick_panel.on_caption_snapshot)
+            if self._quick_panel is not None:
+                self._live_caption_worker.caption_snapshot.connect(
+                    self._quick_panel.on_caption_snapshot
+                )
             self._live_caption_worker.error_occurred.connect(self._control_panel.log_message)
 
             self._live_caption_thread.start()
@@ -171,6 +195,8 @@ class MainWindow(QMainWindow):
             sample_rate=self._config.sample_rate,
             wav_path=wav_path,
             shared_buffer=self._shared_buffer,
+            mic_gain=self._config.mic_gain,
+            mic_sensitivity=self._config.mic_sensitivity,
         )
         self._audio_capture_worker.moveToThread(self._audio_capture_thread)
 
@@ -194,15 +220,13 @@ class MainWindow(QMainWindow):
             shared_buffer=self._shared_buffer,
             game_prompt=self._config.game_prompt,
             language=self._config.language,
+            mic_sensitivity=self._config.mic_sensitivity,
         )
         self._transcription_worker.moveToThread(self._transcription_thread)
 
         self._transcription_thread.started.connect(self._transcription_worker.run)
-        # Loopback segments - generic label until diarization assigns speakers
         self._transcription_worker.segment_ready.connect(self._on_transcription_segment)
-        # Mic segments - always attributed as "Microphone"
         self._transcription_worker.mic_segment_ready.connect(self._on_mic_segment)
-        # Send aligned loopback results to diarization for speaker assignment
         self._transcription_worker.aligned_result_ready.connect(self._on_aligned_result)
         self._transcription_worker.status_message.connect(self._control_panel.log_message)
         self._transcription_worker.error_occurred.connect(self._control_panel.log_message)
@@ -221,9 +245,7 @@ class MainWindow(QMainWindow):
         self._diarization_worker.moveToThread(self._diarization_thread)
 
         self._diarization_thread.started.connect(self._diarization_worker.run)
-        # Diarization produces fully speaker-attributed segments
         self._diarization_worker.attributed_segment.connect(self._on_attributed_segment)
-        # Diarization corrects speakers from overlap cross-checking
         self._diarization_worker.speaker_correction.connect(self._on_speaker_correction)
         self._diarization_worker.status_message.connect(self._control_panel.log_message)
         self._diarization_worker.error_occurred.connect(self._control_panel.log_message)
@@ -239,7 +261,6 @@ class MainWindow(QMainWindow):
         self._control_panel.set_recording_state(False)
         self._control_panel.log_message("Stopping recording...")
 
-        # Stop workers in reverse order
         for worker, thread, name in [
             (self._diarization_worker, self._diarization_thread, "Diarization"),
             (self._transcription_worker, self._transcription_thread, "Transcription"),
@@ -260,27 +281,38 @@ class MainWindow(QMainWindow):
         self._diarization_worker = None
         self._diarization_thread = None
 
-        # Reset equalizers
         self._control_panel.input_equalizer.reset()
         self._control_panel.output_equalizer.reset()
 
         self._save_transcript()
         self._control_panel.log_message("Recording stopped")
 
+    @Slot(float, float)
+    def _on_mic_settings_changed(self, gain: float, sensitivity: float):
+        """Persist new mic settings and push to live workers if recording."""
+        self._config.mic_gain = gain
+        self._config.mic_sensitivity = sensitivity
+        if self._audio_capture_worker is not None:
+            self._audio_capture_worker.set_mic_gain(gain)
+            self._audio_capture_worker.set_mic_sensitivity(sensitivity)
+        if self._transcription_worker is not None:
+            self._transcription_worker.set_mic_sensitivity(sensitivity)
+        self._control_panel.log_message(
+            f"Mic settings updated: gain={gain:.2f}x, sensitivity={sensitivity:.4f}"
+        )
+
     @Slot(str, float, float)
     def _on_transcription_segment(self, text: str, start_time: float, end_time: float):
-        """Show loopback transcription with generic speaker label.
-        Will be replaced when diarization completes."""
+        """Loopback transcription with generic speaker label; replaced by diarization."""
         self._accurate_panel.add_segment(text, "Speaker", start_time, end_time)
 
     @Slot(str, float, float)
     def _on_mic_segment(self, text: str, start_time: float, end_time: float):
-        """Show mic transcription attributed directly as 'Microphone'."""
+        """Mic transcription attributed directly as 'Microphone'."""
         self._accurate_panel.add_segment(text, "Microphone", start_time, end_time)
 
     @Slot(object, float)
     def _on_aligned_result(self, aligned_result: dict, chunk_start_time: float):
-        """Forward aligned transcription to diarization worker for speaker assignment."""
         if self._diarization_worker:
             self._diarization_worker.enqueue_chunk(aligned_result, chunk_start_time)
 
@@ -304,7 +336,6 @@ class MainWindow(QMainWindow):
 
     @Slot(float, float, str)
     def _on_speaker_correction(self, start: float, end: float, corrected_speaker: str):
-        """Correct a speaker label from the overlap cross-check."""
         updated = False
         for seg in self._accurate_panel.get_segments():
             seg_start = seg["timestamp"]
@@ -349,7 +380,6 @@ class MainWindow(QMainWindow):
         if self._recording:
             self._stop_recording()
 
-        # Stop live captions
         if self._live_caption_worker:
             self._live_caption_worker.request_stop()
         if self._live_caption_thread:

@@ -21,7 +21,8 @@ import pandas as pd
 from PySide6.QtCore import QObject, QThread, Signal
 
 from ..audio.recorder import SharedAudioBuffer
-from ..models.selector import detect_vram_gb, select_compute_device
+from ..models.selector import select_compute_device
+from ..utils.platform import set_low_priority
 
 
 class DiarizationWorker(QObject):
@@ -66,12 +67,7 @@ class DiarizationWorker(QObject):
 
     def run(self):
         # Lower OS priority - diarization is background work
-        try:
-            import ctypes
-            handle = ctypes.windll.kernel32.GetCurrentThread()
-            ctypes.windll.kernel32.SetThreadPriority(handle, -1)
-        except Exception:
-            pass
+        set_low_priority()
 
         try:
             self._load_pipeline()
@@ -113,12 +109,22 @@ class DiarizationWorker(QObject):
         self._device = select_compute_device()
         hf_token = os.environ.get("HF_TOKEN")
 
-        self.status_message.emit("Loading diarization pipeline...")
+        self.status_message.emit(f"Loading diarization pipeline (device={self._device})...")
         self._pipeline = Pipeline.from_pretrained(
             "pyannote/speaker-diarization-3.1", token=hf_token
         )
-        if self._device == "cuda":
-            self._pipeline = self._pipeline.to(torch.device("cuda"))
+        if self._device in ("cuda", "mps"):
+            try:
+                self._pipeline = self._pipeline.to(torch.device(self._device))
+            except Exception as e:
+                # Some pyannote ops aren't implemented on MPS. Fall back to CPU.
+                if self._device == "mps":
+                    self.status_message.emit(
+                        f"MPS pipeline unavailable ({e}); falling back to CPU"
+                    )
+                    self._device = "cpu"
+                else:
+                    raise
         self.status_message.emit("Diarization pipeline loaded")
 
     def _process_with_overlap(self, aligned_result: dict, chunk_start_time: float):

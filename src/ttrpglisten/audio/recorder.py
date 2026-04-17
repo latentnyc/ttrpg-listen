@@ -13,19 +13,24 @@ import numpy as np
 _TARGET_RMS = 0.08
 
 
-_MIC_NOISE_FLOOR = 0.008  # RMS below this = ambient noise after gain, skip
+_MIC_NOISE_FLOOR = 0.008  # Default RMS below which mic is considered ambient
 
 
-def smart_mix(loopback: np.ndarray, mic: np.ndarray) -> np.ndarray:
+def smart_mix(
+    loopback: np.ndarray,
+    mic: np.ndarray,
+    noise_floor: float = _MIC_NOISE_FLOOR,
+) -> np.ndarray:
     """Mix loopback and mic audio for Whisper transcription.
 
-    Mic audio is already gain-boosted (5x) at capture time. We mix it in
-    when it has meaningful content (above noise floor), otherwise use
-    loopback only to keep Whisper input clean.
+    Mic audio is already gain-boosted at capture time. We mix it in when the
+    mic RMS is above `noise_floor`, otherwise we use loopback only to keep
+    Whisper input clean. Callers should pass `AppConfig.mic_sensitivity`
+    so the user's configured value is honored.
     """
     mic_rms = float(np.sqrt(np.mean(mic ** 2)))
 
-    if mic_rms < _MIC_NOISE_FLOOR:
+    if mic_rms < noise_floor:
         return loopback.copy()
 
     # Mix at natural levels - mic is already gain-boosted

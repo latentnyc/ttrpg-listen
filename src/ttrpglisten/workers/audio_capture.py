@@ -1,19 +1,27 @@
-"""Audio capture worker - WASAPI loopback + sounddevice mic on a QThread."""
+"""Audio capture worker - cross-platform dual-channel capture on a QThread.
+
+Windows: system-audio via WASAPI loopback (pyaudiowpatch) + mic via sounddevice.
+macOS:   both system-audio (BlackHole or similar) and mic via sounddevice
+         Core Audio input streams.
+"""
 
 from __future__ import annotations
 
-import traceback
+import sys
 import threading
+import traceback
 from collections import deque
 from math import gcd
 from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, Signal, Slot
 
 from ..audio.devices import find_default_loopback, find_default_mic
 from ..audio.recorder import CrashSafeWavWriter, SharedAudioBuffer
+
+IS_WINDOWS = sys.platform == "win32"
 
 
 class AudioCaptureWorker(QObject):
@@ -29,6 +37,8 @@ class AudioCaptureWorker(QObject):
         sample_rate: int,
         wav_path: Path | None,
         shared_buffer: SharedAudioBuffer,
+        mic_gain: float = 3.0,
+        mic_sensitivity: float = 0.008,
     ):
         super().__init__()
         self._mic_device_idx = mic_device_idx
@@ -38,9 +48,15 @@ class AudioCaptureWorker(QObject):
         self._shared_buffer = shared_buffer
         self._stop_event = threading.Event()
 
+        # Live-adjustable settings
+        self._settings_lock = threading.Lock()
+        self._mic_gain = float(mic_gain)
+        self._mic_sensitivity = float(mic_sensitivity)
+
         self._wav_writer: CrashSafeWavWriter | None = None
         self._mic_stream: sd.InputStream | None = None
-        self._loopback_thread = None
+        self._loopback_stream: sd.InputStream | None = None
+        self._loopback_thread = None  # Windows pyaudiowpatch thread
 
         # Buffers for synchronized writing
         self._loopback_buf = np.zeros(0, dtype=np.float32)
@@ -49,19 +65,38 @@ class AudioCaptureWorker(QObject):
         self._chunk_samples = int(sample_rate * 0.1)  # 100ms chunks
 
         self._has_both = False
-        self._loopback_info: dict | None = None
 
-        # Raw mic audio queue - callback pushes here, main loop resamples
+        # Raw audio queues - callbacks push here, main loop resamples + applies gain
         self._mic_raw_queue: deque[np.ndarray] = deque()
         self._mic_need_resample = False
         self._mic_up = 1
         self._mic_down = 1
+
+        self._loopback_raw_queue: deque[np.ndarray] = deque()
+        self._loopback_need_resample = False
+        self._loopback_up = 1
+        self._loopback_down = 1
+        self._loopback_channels = 1
 
         # For equalizer updates (~30fps)
         self._eq_counter = 0
 
     def request_stop(self):
         self._stop_event.set()
+
+    @Slot(float)
+    def set_mic_gain(self, gain: float):
+        with self._settings_lock:
+            self._mic_gain = float(gain)
+
+    @Slot(float)
+    def set_mic_sensitivity(self, sensitivity: float):
+        with self._settings_lock:
+            self._mic_sensitivity = float(sensitivity)
+
+    def _current_gain(self) -> float:
+        with self._settings_lock:
+            return self._mic_gain
 
     def run(self):
         """Start audio capture. Called from QThread."""
@@ -70,30 +105,36 @@ class AudioCaptureWorker(QObject):
             self._setup_mic()
             self._setup_loopback()
 
-            self._has_both = self._mic_stream is not None and self._loopback_thread is not None
+            has_mic = self._mic_stream is not None
+            has_loopback = self._loopback_stream is not None or self._loopback_thread is not None
+            self._has_both = has_mic and has_loopback
 
-            if self._mic_stream is None and self._loopback_thread is None:
+            if not has_mic and not has_loopback:
                 self.error_occurred.emit("No audio devices available")
                 return
 
             self.status_message.emit("Audio capture started")
 
-            # Main loop: drain raw mic queue and resample on this thread
-            # (scipy.resample_poly can't run inside the sounddevice callback
-            # because it triggers a torch import cycle via array API detection)
+            # Main loop: drain raw queues on this thread (resample + gain).
+            # Not inside sounddevice callbacks because scipy.resample_poly
+            # triggers a torch import cycle via array API detection.
             from scipy.signal import resample_poly
 
-            # Software gain for quiet USB mics (Blue Snowball etc)
-            MIC_GAIN = 3.0
-
             while not self._stop_event.is_set():
+                # Drain mic queue (resample + apply gain + clip)
                 while self._mic_raw_queue:
                     raw = self._mic_raw_queue.popleft()
                     if self._mic_need_resample:
                         raw = resample_poly(raw, self._mic_up, self._mic_down).astype(np.float32)
-                    # Apply gain boost and clip to prevent distortion
-                    raw = np.clip(raw * MIC_GAIN, -1.0, 1.0)
+                    raw = np.clip(raw * self._current_gain(), -1.0, 1.0)
                     self._on_audio("mic", raw)
+
+                # Drain loopback queue (Mac only — Windows pushes via _LoopbackThread)
+                while self._loopback_raw_queue:
+                    raw = self._loopback_raw_queue.popleft()
+                    if self._loopback_need_resample:
+                        raw = resample_poly(raw, self._loopback_up, self._loopback_down).astype(np.float32)
+                    self._on_audio("loopback", raw.astype(np.float32, copy=False))
 
                 self._stop_event.wait(0.02)
 
@@ -138,10 +179,8 @@ class AudioCaptureWorker(QObject):
                 if self._stop_event.is_set():
                     return
                 audio = indata[:, 0].copy() if indata.shape[1] > 1 else indata.flatten().copy()
-                # Push raw audio to queue; resampling happens on the worker thread
                 self._mic_raw_queue.append(audio)
 
-            # Some devices don't support mono - try mono first, fall back to max channels
             channels = 1
             blocksize = max(256, int(native_rate * 0.03))
             try:
@@ -175,10 +214,21 @@ class AudioCaptureWorker(QObject):
             self.error_occurred.emit(f"Mic error: {e}")
 
     def _setup_loopback(self):
+        """Open the system-audio source.
+
+        On Windows, use pyaudiowpatch's WASAPI loopback (distinct from regular
+        input devices). On macOS / POSIX, the "loopback" is just another
+        sounddevice input (e.g. BlackHole 2ch).
+        """
+        if IS_WINDOWS:
+            self._setup_loopback_windows()
+        else:
+            self._setup_loopback_sounddevice()
+
+    def _setup_loopback_windows(self):
         loopback_info = None
 
         if self._loopback_device_idx is not None:
-            # User selected a specific loopback device
             try:
                 import pyaudiowpatch as pyaudio
                 p = pyaudio.PyAudio()
@@ -205,10 +255,8 @@ class AudioCaptureWorker(QObject):
             self.status_message.emit("No loopback device found")
             return
 
-        self._loopback_info = loopback_info
-
         try:
-            self._loopback_thread = _LoopbackThread(
+            self._loopback_thread = _WindowsLoopbackThread(
                 loopback_info,
                 lambda audio: self._on_audio("loopback", audio),
                 lambda msg: self.error_occurred.emit(msg),
@@ -221,9 +269,70 @@ class AudioCaptureWorker(QObject):
             self.error_occurred.emit(f"Loopback error: {e}")
             self._loopback_thread = None
 
+    def _setup_loopback_sounddevice(self):
+        """Open a regular sounddevice input as the system-audio source (Mac)."""
+        loopback_id = self._loopback_device_idx
+        if loopback_id is None:
+            default = find_default_loopback()
+            if default is not None:
+                loopback_id = default["index"]
+
+        if loopback_id is None:
+            self.status_message.emit(
+                "No loopback device found. Install BlackHole 2ch and route "
+                "system audio through it, then restart."
+            )
+            return
+
+        try:
+            dev_info = sd.query_devices(loopback_id)
+            dev_name = dev_info["name"]
+            native_rate = int(dev_info["default_samplerate"])
+            max_channels = int(dev_info["max_input_channels"])
+
+            if max_channels < 1:
+                self.error_occurred.emit(
+                    f"Loopback '{dev_name}' has no input channels"
+                )
+                return
+
+            channels = min(max_channels, 2)
+            self._loopback_channels = channels
+
+            self._loopback_need_resample = native_rate != self._sample_rate
+            if self._loopback_need_resample:
+                g = gcd(native_rate, self._sample_rate)
+                self._loopback_up = self._sample_rate // g
+                self._loopback_down = native_rate // g
+
+            def lb_cb(indata, frames, time_info, status):
+                if self._stop_event.is_set():
+                    return
+                if indata.shape[1] > 1:
+                    audio = indata.mean(axis=1).copy()
+                else:
+                    audio = indata.flatten().copy()
+                self._loopback_raw_queue.append(audio)
+
+            blocksize = max(256, int(native_rate * 0.03))
+            self._loopback_stream = sd.InputStream(
+                device=loopback_id,
+                samplerate=native_rate,
+                channels=channels,
+                dtype="float32",
+                blocksize=blocksize,
+                callback=lb_cb,
+            )
+            self._loopback_stream.start()
+            self.status_message.emit(
+                f"Loopback: {dev_name} ({native_rate}Hz, {channels}ch)"
+            )
+        except Exception as e:
+            self.error_occurred.emit(f"Loopback error: {e}")
+            self._loopback_stream = None
+
     def _on_audio(self, source: str, audio: np.ndarray):
         """Handle incoming audio from mic or loopback."""
-        # Emit for equalizer (~30fps = every 3rd chunk at 100ms chunks)
         self._eq_counter += 1
         if self._eq_counter % 3 == 0:
             if source == "mic":
@@ -281,6 +390,14 @@ class AudioCaptureWorker(QObject):
                 pass
             self._mic_stream = None
 
+        if self._loopback_stream:
+            try:
+                self._loopback_stream.stop()
+                self._loopback_stream.close()
+            except Exception:
+                pass
+            self._loopback_stream = None
+
         if self._loopback_thread:
             self._loopback_thread.stop()
             self._loopback_thread = None
@@ -292,7 +409,7 @@ class AudioCaptureWorker(QObject):
         self.status_message.emit("Audio capture stopped")
 
 
-class _LoopbackThread:
+class _WindowsLoopbackThread:
     """Captures system audio via pyaudiowpatch WASAPI loopback on a daemon thread."""
 
     def __init__(
@@ -359,7 +476,6 @@ class _LoopbackThread:
             pa.terminate()
 
     def stop(self):
-        # stop_event is shared, already set by parent
         if self._thread:
             self._thread.join(timeout=2)
             self._thread = None

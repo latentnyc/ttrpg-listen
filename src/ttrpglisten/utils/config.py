@@ -71,6 +71,27 @@ class AppConfig:
         self._settings.sync()
 
     @property
+    def mic_gain(self) -> float:
+        """Software gain multiplier applied to mic audio after resampling."""
+        return float(self._settings.value("audio/mic_gain", 3.0))
+
+    @mic_gain.setter
+    def mic_gain(self, value: float):
+        self._settings.setValue("audio/mic_gain", float(value))
+        self._settings.sync()
+
+    @property
+    def mic_sensitivity(self) -> float:
+        """RMS threshold below which mic audio is treated as ambient noise
+        and excluded from the smart-mix / transcription gate."""
+        return float(self._settings.value("audio/mic_sensitivity", 0.008))
+
+    @mic_sensitivity.setter
+    def mic_sensitivity(self, value: float):
+        self._settings.setValue("audio/mic_sensitivity", float(value))
+        self._settings.sync()
+
+    @property
     def mic_device(self) -> int | None:
         val = self._settings.value("audio/mic_device", None)
         return int(val) if val is not None else None

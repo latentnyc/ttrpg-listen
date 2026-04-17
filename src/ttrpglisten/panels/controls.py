@@ -21,10 +21,14 @@ class ControlPanel(QWidget):
     start_requested = Signal()
     stop_requested = Signal()
     layout_toggle_requested = Signal()
+    # Emitted with (mic_gain, mic_sensitivity) when the user accepts the
+    # Mic Settings dialog.
+    mic_settings_changed = Signal(float, float)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, show_layout_toggle: bool = False):
         super().__init__(parent)
         self._recording = False
+        self._show_layout_toggle = show_layout_toggle
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(4, 4, 4, 4)
@@ -40,26 +44,26 @@ class ControlPanel(QWidget):
         left_layout = QVBoxLayout(left_group)
 
         self._start_stop_btn = QPushButton("Start Recording")
-        self._start_stop_btn.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self._start_stop_btn.setMinimumHeight(36)
         self._start_stop_btn.setStyleSheet(
             "QPushButton { background-color: #2e7d32; color: white; "
-            "border-radius: 4px; padding: 6px 16px; } "
+            "border-radius: 4px; padding: 6px 16px; font-weight: bold; } "
             "QPushButton:hover { background-color: #388e3c; } "
             "QPushButton:pressed { background-color: #1b5e20; }"
         )
         self._start_stop_btn.clicked.connect(self._on_start_stop)
         left_layout.addWidget(self._start_stop_btn)
 
-        self._layout_btn = QPushButton("Toggle Layout")
-        self._layout_btn.setMinimumHeight(28)
-        self._layout_btn.setStyleSheet(
-            "QPushButton { background-color: #37474f; color: #d4d4d4; "
-            "border-radius: 4px; padding: 4px 12px; } "
-            "QPushButton:hover { background-color: #455a64; }"
-        )
-        self._layout_btn.clicked.connect(self.layout_toggle_requested.emit)
-        left_layout.addWidget(self._layout_btn)
+        if self._show_layout_toggle:
+            self._layout_btn = QPushButton("Toggle Layout")
+            self._layout_btn.setMinimumHeight(28)
+            self._layout_btn.setStyleSheet(
+                "QPushButton { background-color: #37474f; color: #d4d4d4; "
+                "border-radius: 4px; padding: 4px 12px; } "
+                "QPushButton:hover { background-color: #455a64; }"
+            )
+            self._layout_btn.clicked.connect(self.layout_toggle_requested.emit)
+            left_layout.addWidget(self._layout_btn)
 
         # Game system selector
         left_layout.addWidget(QLabel("Game System:"))
@@ -77,8 +81,19 @@ class ControlPanel(QWidget):
         mid_layout = QVBoxLayout(mid_group)
 
         mid_layout.addWidget(QLabel("Microphone:"))
+        mic_row = QHBoxLayout()
+        mic_row.setSpacing(4)
         self._mic_combo = QComboBox()
-        mid_layout.addWidget(self._mic_combo)
+        mic_row.addWidget(self._mic_combo, stretch=1)
+        self._mic_settings_btn = QPushButton("Mic Settings...")
+        self._mic_settings_btn.setStyleSheet(
+            "QPushButton { background-color: #37474f; color: #d4d4d4; "
+            "border-radius: 3px; padding: 2px 10px; font-size: 10px; } "
+            "QPushButton:hover { background-color: #455a64; }"
+        )
+        self._mic_settings_btn.clicked.connect(self._open_mic_settings)
+        mic_row.addWidget(self._mic_settings_btn)
+        mid_layout.addLayout(mic_row)
 
         mid_layout.addWidget(QLabel("System Audio:"))
         self._loopback_combo = QComboBox()
@@ -116,13 +131,30 @@ class ControlPanel(QWidget):
         else:
             self.start_requested.emit()
 
+    def _open_mic_settings(self):
+        """Open the Mic Settings dialog. Lazy import so sounddevice streams
+        aren't created on app startup."""
+        from ..utils.config import AppConfig
+        from ..widgets.mic_test import MicTestDialog
+
+        cfg = AppConfig()
+        mic_idx = self.selected_mic_index()
+        dlg = MicTestDialog(
+            mic_device_idx=mic_idx,
+            initial_gain=cfg.mic_gain,
+            initial_sensitivity=cfg.mic_sensitivity,
+            parent=self,
+        )
+        if dlg.exec():
+            self.mic_settings_changed.emit(dlg.result_gain(), dlg.result_sensitivity())
+
     def set_recording_state(self, recording: bool):
         self._recording = recording
         if recording:
             self._start_stop_btn.setText("Stop Recording")
             self._start_stop_btn.setStyleSheet(
                 "QPushButton { background-color: #c62828; color: white; "
-                "border-radius: 4px; padding: 6px 16px; } "
+                "border-radius: 4px; padding: 6px 16px; font-weight: bold; } "
                 "QPushButton:hover { background-color: #d32f2f; } "
                 "QPushButton:pressed { background-color: #b71c1c; }"
             )
@@ -130,19 +162,18 @@ class ControlPanel(QWidget):
             self._start_stop_btn.setText("Start Recording")
             self._start_stop_btn.setStyleSheet(
                 "QPushButton { background-color: #2e7d32; color: white; "
-                "border-radius: 4px; padding: 6px 16px; } "
+                "border-radius: 4px; padding: 6px 16px; font-weight: bold; } "
                 "QPushButton:hover { background-color: #388e3c; } "
                 "QPushButton:pressed { background-color: #1b5e20; }"
             )
 
-        # Lock/unlock controls during recording
+        # Lock device pickers during recording; keep Mic Settings live-editable.
         self._mic_combo.setEnabled(not recording)
         self._loopback_combo.setEnabled(not recording)
         self._game_combo.setEnabled(not recording)
 
     def log_message(self, msg: str):
         self._status_log.appendPlainText(msg)
-        # Auto-scroll to bottom so latest message is visible
         scrollbar = self._status_log.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
