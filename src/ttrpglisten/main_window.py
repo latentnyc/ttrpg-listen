@@ -251,6 +251,7 @@ class MainWindow(QMainWindow):
                 if not thread.wait(5000):
                     self._control_panel.log_message(f"{name} thread did not stop cleanly")
                     thread.terminate()
+                    thread.wait(2000)
 
         self._audio_capture_worker = None
         self._audio_capture_thread = None
@@ -323,23 +324,26 @@ class MainWindow(QMainWindow):
         if not segments:
             return
 
-        transcript_dir = Path(self._config.transcript_directory)
-        transcript_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
-        txt_path = transcript_dir / f"session_{timestamp}.txt"
+        try:
+            transcript_dir = Path(self._config.transcript_directory)
+            transcript_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+            txt_path = transcript_dir / f"session_{timestamp}.txt"
 
-        with open(txt_path, "w", encoding="utf-8") as f:
-            f.write(f"TTRPG Listen - Session Transcript\n")
-            f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
-            f.write(f"Game: {self._control_panel.selected_game_system()}\n")
-            f.write(f"{'=' * 50}\n\n")
+            with open(txt_path, "w", encoding="utf-8") as f:
+                f.write("TTRPG Listen - Session Transcript\n")
+                f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+                f.write(f"Game: {self._control_panel.selected_game_system()}\n")
+                f.write(f"{'=' * 50}\n\n")
 
-            for seg in segments:
-                minutes = int(seg["timestamp"] // 60)
-                seconds = int(seg["timestamp"] % 60)
-                f.write(f"[{minutes:02d}:{seconds:02d}] {seg['speaker']}: {seg['text']}\n\n")
+                for seg in segments:
+                    minutes = int(seg["timestamp"] // 60)
+                    seconds = int(seg["timestamp"] % 60)
+                    f.write(f"[{minutes:02d}:{seconds:02d}] {seg['speaker']}: {seg['text']}\n\n")
 
-        self._control_panel.log_message(f"Transcript saved to {txt_path}")
+            self._control_panel.log_message(f"Transcript saved to {txt_path}")
+        except OSError as e:
+            self._control_panel.log_message(f"Failed to save transcript: {e}")
 
     def closeEvent(self, event):
         if self._recording:
@@ -350,6 +354,8 @@ class MainWindow(QMainWindow):
             self._live_caption_worker.request_stop()
         if self._live_caption_thread:
             self._live_caption_thread.quit()
-            self._live_caption_thread.wait(2000)
+            if not self._live_caption_thread.wait(5000):
+                self._live_caption_thread.terminate()
+                self._live_caption_thread.wait(2000)
 
         event.accept()

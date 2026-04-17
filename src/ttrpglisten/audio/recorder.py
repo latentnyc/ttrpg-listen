@@ -170,20 +170,29 @@ class CrashSafeWavWriter:
 
         now = time.monotonic()
 
-        with self._lock:
-            self._file.write(data)
-            self._data_size += len(data)
+        try:
+            with self._lock:
+                self._file.write(data)
+                self._data_size += len(data)
 
-            # Flush every 5 seconds
-            if now - self._last_flush >= 5.0:
-                self._file.flush()
-                os.fsync(self._file.fileno())
-                self._last_flush = now
+                if now - self._last_flush >= 5.0:
+                    self._file.flush()
+                    os.fsync(self._file.fileno())
+                    self._last_flush = now
 
-            # Update header every 30 seconds
-            if now - self._last_header_update >= 30.0:
-                self._do_update_header()
-                self._last_header_update = now
+                if now - self._last_header_update >= 30.0:
+                    self._do_update_header()
+                    self._last_header_update = now
+        except OSError:
+            # Disk full or I/O error - close the file to preserve what we have
+            with self._lock:
+                if self._file:
+                    try:
+                        self._do_update_header()
+                        self._file.close()
+                    except Exception:
+                        pass
+                    self._file = None
 
     def _write_header(self, data_size: int):
         """Write a complete WAV header at the beginning of the file."""

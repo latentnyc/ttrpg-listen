@@ -236,24 +236,31 @@ class DiarizationWorker(QObject):
 
         return pd.DataFrame(rows)
 
-    def _build_window_aligned(self, aligned_result, chunk_start_time, window_start):
+    def _build_window_aligned(
+        self, aligned_result: dict, chunk_start_time: float, window_start: float
+    ) -> dict:
         """Build an aligned result dict with times relative to window start.
 
-        The aligned_result from the transcription worker has times relative to
-        chunk_start_time. We need to adjust them so they're relative to
-        window_start for whisperx.assign_word_speakers to work correctly.
+        Selective copy: only copies the dicts/lists we mutate, not numpy arrays
+        or torch tensors that may be in the result.
         """
-        import copy
         offset = chunk_start_time - window_start
-        result = copy.deepcopy(aligned_result)
+        result = {"segments": [], "word_segments": aligned_result.get("word_segments", [])}
 
-        for seg in result.get("segments", []):
-            seg["start"] = seg.get("start", 0) + offset
-            seg["end"] = seg.get("end", 0) + offset
+        for seg in aligned_result.get("segments", []):
+            new_seg = {
+                "text": seg.get("text", ""),
+                "start": seg.get("start", 0) + offset,
+                "end": seg.get("end", 0) + offset,
+                "words": [],
+            }
             for word in seg.get("words", []):
-                if "start" in word:
-                    word["start"] = word["start"] + offset
-                if "end" in word:
-                    word["end"] = word["end"] + offset
+                new_word = dict(word)
+                if "start" in new_word:
+                    new_word["start"] = new_word["start"] + offset
+                if "end" in new_word:
+                    new_word["end"] = new_word["end"] + offset
+                new_seg["words"].append(new_word)
+            result["segments"].append(new_seg)
 
         return result
